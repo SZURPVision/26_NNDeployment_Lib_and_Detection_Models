@@ -1,0 +1,1 @@
+feat(NNdeployment) 重点补充了json构建方式，并分开了armor和rune的类与结果获取函数，更新后需要修改接口
