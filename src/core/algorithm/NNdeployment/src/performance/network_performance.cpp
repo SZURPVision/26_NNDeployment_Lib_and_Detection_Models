@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -19,6 +20,47 @@
 
 namespace MPT
 {
+namespace detail
+{
+struct EndToEndResult
+{
+    std::uint64_t calls = 0;
+    double average_preprocess_us = 0.0;
+    double average_inference_us = 0.0;
+    double average_postprocess_us = 0.0;
+    double average_total_us = 0.0;
+    double minimum_inference_us = 0.0;
+    double maximum_inference_us = 0.0;
+    double average_fps = 0.0;
+};
+
+std::mutex &endToEndResultMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+EndToEndResult &latestEndToEndResult()
+{
+    static EndToEndResult result;
+    return result;
+}
+
+void recordEndToEndResult(const EndToEndResult &result)
+{
+    std::lock_guard<std::mutex> lock(endToEndResultMutex());
+    latestEndToEndResult() = result;
+}
+
+EndToEndResult takeEndToEndResult()
+{
+    std::lock_guard<std::mutex> lock(endToEndResultMutex());
+    const EndToEndResult result = latestEndToEndResult();
+    latestEndToEndResult() = {};
+    return result;
+}
+} // namespace detail
+
 void SpeedStats::update(double preprocess_us, double inference_us, double postprocess_us)
 {
     m_total_preprocess_us += preprocess_us;
@@ -37,6 +79,15 @@ void SpeedStats::printCurrentStats() const
     const double average_postprocess_us = m_call_count > 0 ? m_total_postprocess_us / count : 0.0;
     const double average_total_us = average_preprocess_us + average_inference_us + average_postprocess_us;
     const double average_fps = average_total_us > 0.0 ? 1'000'000.0 / average_total_us : 0.0;
+
+    detail::recordEndToEndResult({m_call_count,
+                                  average_preprocess_us,
+                                  average_inference_us,
+                                  average_postprocess_us,
+                                  average_total_us,
+                                  m_min_inference_us,
+                                  m_max_inference_us,
+                                  average_fps});
 
     std::cout << std::fixed << std::setprecision(2)
               << "次数:" << m_call_count
@@ -64,6 +115,96 @@ struct OfficialBenchmarkResult
     double latency_max_ms = 0.0;
     double throughput_fps = 0.0;
 };
+
+std::string fixedValue(double value)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(2) << value;
+    return stream.str();
+}
+
+void appendMetricRow(std::ostringstream &stream,
+                     const std::string &scope,
+                     const std::string &metric,
+                     const std::string &value,
+                     const std::string &unit)
+{
+    stream << "| " << scope
+           << " | " << metric
+           << " | " << value
+           << " | " << unit << " |\n";
+}
+
+std::string formatPerformanceReport(const std::string &model_path,
+                                    const std::string &device,
+                                    const std::string &infer_mode,
+                                    const OfficialBenchmarkConfig &config,
+                                    const EndToEndResult &end_to_end,
+                                    const OfficialBenchmarkResult *benchmark,
+                                    const std::string &benchmark_error = {})
+{
+    const std::filesystem::path model(model_path);
+    std::ostringstream stream;
+    stream << "\n## Model Performance Report\n\n"
+           << "- Model: " << model.filename().string() << '\n'
+           << "- Model path: " << model_path << '\n'
+           << "- Device: " << device << '\n'
+           << "- Inference mode: " << infer_mode << '\n'
+           << "- Benchmark performance hint: " << config.perf_hint << "\n\n"
+           << "| Test scope | Metric | Value | Unit |\n"
+           << "| --- | --- | ---: | --- |\n";
+
+    if (end_to_end.calls > 0)
+    {
+        appendMetricRow(stream, "End-to-end", "Calls",
+                        std::to_string(end_to_end.calls), "calls");
+        appendMetricRow(stream, "End-to-end", "Average preprocess time",
+                        fixedValue(end_to_end.average_preprocess_us), "us");
+        appendMetricRow(stream, "End-to-end", "Average inference time",
+                        fixedValue(end_to_end.average_inference_us), "us");
+        appendMetricRow(stream, "End-to-end", "Average postprocess time",
+                        fixedValue(end_to_end.average_postprocess_us), "us");
+        appendMetricRow(stream, "End-to-end", "Average total time",
+                        fixedValue(end_to_end.average_total_us), "us");
+        appendMetricRow(stream, "End-to-end", "Minimum inference time",
+                        fixedValue(end_to_end.minimum_inference_us), "us");
+        appendMetricRow(stream, "End-to-end", "Maximum inference time",
+                        fixedValue(end_to_end.maximum_inference_us), "us");
+        appendMetricRow(stream, "End-to-end", "Average FPS",
+                        fixedValue(end_to_end.average_fps), "FPS");
+    }
+    else
+    {
+        appendMetricRow(stream, "End-to-end", "Status",
+                        "No timing data", "-");
+    }
+
+    if (benchmark != nullptr)
+    {
+        appendMetricRow(stream, "BenchmarkApp", "Iterations",
+                        std::to_string(benchmark->iterations), "iterations");
+        appendMetricRow(stream, "BenchmarkApp", "Duration",
+                        fixedValue(benchmark->duration_ms), "ms");
+        appendMetricRow(stream, "BenchmarkApp", "Median latency",
+                        fixedValue(benchmark->latency_median_ms), "ms");
+        appendMetricRow(stream, "BenchmarkApp", "Average latency",
+                        fixedValue(benchmark->latency_average_ms), "ms");
+        appendMetricRow(stream, "BenchmarkApp", "Minimum latency",
+                        fixedValue(benchmark->latency_min_ms), "ms");
+        appendMetricRow(stream, "BenchmarkApp", "Maximum latency",
+                        fixedValue(benchmark->latency_max_ms), "ms");
+        appendMetricRow(stream, "BenchmarkApp", "Throughput",
+                        fixedValue(benchmark->throughput_fps), "FPS");
+    }
+    else
+    {
+        appendMetricRow(stream, "BenchmarkApp", "Status", "Failed", "-");
+        if (!benchmark_error.empty())
+            stream << "\nBenchmark error:\n" << benchmark_error << '\n';
+    }
+
+    return stream.str();
+}
 
 std::string resolveMptLogPath()
 {
@@ -185,6 +326,21 @@ void runOfficialBenchmark(const std::string &model_path,
                           const std::string &infer_mode,
                           const OfficialBenchmarkConfig &config)
 {
+    const detail::EndToEndResult end_to_end = detail::takeEndToEndResult();
+    const auto emit_report = [&](const detail::OfficialBenchmarkResult *benchmark,
+                                 const std::string &benchmark_error)
+    {
+        const std::string report = detail::formatPerformanceReport(model_path,
+                                                                   device,
+                                                                   infer_mode,
+                                                                   config,
+                                                                   end_to_end,
+                                                                   benchmark,
+                                                                   benchmark_error);
+        std::cout << report << std::endl;
+        detail::appendMptLog(report);
+    };
+
     // benchmark_app 只区分 sync/async API，多请求模式统一映射为 async。
     const std::string benchmark_api = infer_mode == "sync" ? "sync" : "async";
     std::ostringstream command;
@@ -206,7 +362,10 @@ void runOfficialBenchmark(const std::string &model_path,
 
     std::unique_ptr<FILE, int (*)(FILE *)> pipe(popen(command.str().c_str(), "r"), pclose);
     if (!pipe)
+    {
+        emit_report(nullptr, "failed to launch benchmark_app");
         throw std::runtime_error("failed to launch benchmark_app");
+    }
 
     std::string output;
     char buffer[4096] = {0};
@@ -216,7 +375,10 @@ void runOfficialBenchmark(const std::string &model_path,
     // 先读取完整输出，再检查子进程退出码，失败时保留原始诊断信息。
     const int exit_code = pclose(pipe.release());
     if (exit_code != 0)
+    {
+        emit_report(nullptr, "benchmark_app failed:\n" + output);
         throw std::runtime_error("benchmark_app failed:\n" + output);
+    }
 
     // 解析字段和单位来自 benchmark_app 的标准文本输出。
     detail::OfficialBenchmarkResult result;
@@ -229,19 +391,12 @@ void runOfficialBenchmark(const std::string &model_path,
         detail::extractBenchmarkValue(output, "Max:", "ms", result.latency_max_ms) &&
         detail::extractBenchmarkValue(output, "Throughput:", "FPS", result.throughput_fps);
     if (!parsed_ok)
+    {
+        emit_report(nullptr, "failed to parse benchmark_app output:\n" + output);
         throw std::runtime_error("failed to parse benchmark_app output:\n" + output);
+    }
 
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(2)
-        << "[BenchmarkApp] 迭代次数:" << result.iterations
-        << " | 总时长:" << result.duration_ms << " ms\n"
-        << "[BenchmarkApp] 延迟中位数:" << result.latency_median_ms << " ms"
-        << " | 平均延迟:" << result.latency_average_ms << " ms"
-        << " | 最小延迟:" << result.latency_min_ms << " ms"
-        << " | 最大延迟:" << result.latency_max_ms << " ms"
-        << " | 吞吐量:" << result.throughput_fps << " FPS";
-    std::cout << oss.str() << std::endl;
-    detail::appendMptLog(oss.str());
+    emit_report(&result, {});
 }
 
 } // namespace MPT
