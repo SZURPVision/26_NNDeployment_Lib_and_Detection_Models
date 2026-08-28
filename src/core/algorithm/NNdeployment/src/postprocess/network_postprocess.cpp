@@ -4,6 +4,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <cmath>
+#include <cstddef>
 #include <iostream>
 #include <numeric>
 #include <queue>
@@ -16,6 +17,17 @@
 // ==================== 部署流程辅助区域 ====================
 namespace
 {
+struct CandidateView
+{
+    const float *data = nullptr;
+    std::size_t feature_stride = 0;
+
+    float operator[](std::size_t feature_index) const noexcept
+    {
+        return data[feature_index * feature_stride];
+    }
+};
+
 cv::Rect2d getArmorBoundingRect(const NetArmorResult &result)
 {
     double min_x = result.points[0].x;
@@ -88,26 +100,6 @@ bool shouldAppendArmorResult(const NetArmorResult &result, const int my_color, s
     return false;
 }
 
-// 按输出张量形状，将初始一维指针转化为匹配输出形状的二维指针
-std::vector<const float *> buildRowView(const float *input_ptr, const InferParam &infer_param)
-{
-    std::vector<const float *> input_mat;
-    //异常情况舍去
-    if (!input_ptr || infer_param.out_tensor_rows <= 0 || infer_param.out_tensor_cols <= 0)
-    {
-        return input_mat;
-    }
-
-    //初始分配rows行
-    input_mat.resize(infer_param.out_tensor_rows);
-    for (int row = 0; row < infer_param.out_tensor_rows; ++row)
-    {
-        //此处只需要定义头指针的位置即可
-        input_mat[row] = input_ptr + row * infer_param.out_tensor_cols;
-    }
-    return input_mat;
-}
-
 YOLOModel::Postprocessor::Postprocessor(const ModelConfig &modelconfig, float nms_threshold)
     : m_model_config(modelconfig), m_nms_threshold(nms_threshold) {}
 
@@ -121,9 +113,7 @@ std::vector<NetArmorResult> V5InfantryPostProcessor::postProcessArmorMat(const f
     const float confidence_threshold = m_model_config.confidence_threshold;
     const float nms_threshold = m_nms_threshold;
 
-    // 将原始传入指针改为二维指针，便于后续的行列处理
-    auto input_mat = buildRowView(input_ptr, infer_param);
-    if (infer_param.out_tensor_cols != (4 * 2 + 1 + 4 + 9))
+    if (!input_ptr || infer_param.out_tensor_cols != (4 * 2 + 1 + 4 + 9))
     {
         std::cerr << "模型输出形状不匹配，请检查模型路径" << std::endl;
         return {};
@@ -142,15 +132,24 @@ std::vector<NetArmorResult> V5InfantryPostProcessor::postProcessArmorMat(const f
     const double raw_confidence_threshold = std::log(static_cast<double>(confidence_threshold) / (1.0 - static_cast<double>(confidence_threshold)));
     const float score_threshold = confidence_threshold;
 
-    // input_mat=25200*22，每行是一组候选结果
+    // V5 输出为 25200*22，每行是一组候选结果。
     for (int candidate_index = 0; candidate_index < infer_param.out_tensor_rows; ++candidate_index)
     {
+        const CandidateView candidate{
+            input_ptr + static_cast<std::size_t>(candidate_index) *
+                            static_cast<std::size_t>(infer_param.out_tensor_cols),
+            1};
+
+        const double raw_confidence = candidate[8]; // 第8列为未归一化的总体置信度
+        if (raw_confidence < raw_confidence_threshold)
+            continue; // 先过滤低置信度候选，避免无效的类别比较
+
         // 类别分支得分：[13,21]分别对应9个类别
         int class_id = 0;
-        double best_class_score = input_mat[candidate_index][13];
+        double best_class_score = candidate[13];
         for (int class_index = 1; class_index < 9; ++class_index)
         {
-            const double class_score = input_mat[candidate_index][13 + class_index];
+            const double class_score = candidate[13 + class_index];
             if (class_score > best_class_score)
             {
                 best_class_score = class_score;
@@ -158,20 +157,16 @@ std::vector<NetArmorResult> V5InfantryPostProcessor::postProcessArmorMat(const f
             }
         }
 
-        const double raw_confidence = input_mat[candidate_index][8]; // 第8列为未归一化的总体置信度
-        if (raw_confidence < raw_confidence_threshold)
-            continue; // 低于白名单阈值的直接跳过
-
         const double confidence = raw_confidence >= 0.0
                                       ? 1.0 / (1.0 + std::exp(-raw_confidence))
                                       : std::exp(raw_confidence) / (1.0 + std::exp(raw_confidence));
 
         // 颜色分支得分：[9,12]分别对应4种颜色
         int color_id = 0;
-        double best_color_score = input_mat[candidate_index][9];
+        double best_color_score = candidate[9];
         for (int color_index = 1; color_index < 4; ++color_index)
         {
-            const double color_score = input_mat[candidate_index][9 + color_index];
+            const double color_score = candidate[9 + color_index];
             if (color_score > best_color_score)
             {
                 best_color_score = color_score;
@@ -190,8 +185,8 @@ std::vector<NetArmorResult> V5InfantryPostProcessor::postProcessArmorMat(const f
 
         for (int point_index = 0; point_index < 4; ++point_index)
         {
-            const float x = input_mat[candidate_index][point_index * 2 + 0];
-            const float y = input_mat[candidate_index][point_index * 2 + 1];
+            const float x = candidate[point_index * 2 + 0];
+            const float y = candidate[point_index * 2 + 1];
 
             // 还原到原图尺度
             const float kpt_x = (x - infer_param.pad_x) / infer_param.scale;
@@ -289,8 +284,7 @@ std::vector<NetArmorResult> V8_21InfantryPostProcessor::postProcessArmorMat(cons
     const float confidence_threshold = m_model_config.confidence_threshold;
     const float nms_threshold = m_nms_threshold;
 
-    auto input_mat = buildRowView(input_ptr, infer_param);
-    if (infer_param.out_tensor_rows != (4 + 9 + 4 * 2))
+    if (!input_ptr || infer_param.out_tensor_rows != (4 + 9 + 4 * 2))
     {
         std::cerr << "模型输出形状不匹配，请检查模型路径" << std::endl;
         return {};
@@ -307,15 +301,19 @@ std::vector<NetArmorResult> V8_21InfantryPostProcessor::postProcessArmorMat(cons
 
     const float score_threshold = confidence_threshold;
 
-    // input_mat=21*6300，每列是一组候选结果
+    // V8 21维输出为 21*6300，每列是一组候选结果。
     for (int candidate_index = 0; candidate_index < infer_param.out_tensor_cols; ++candidate_index)
     {
+        const CandidateView candidate{
+            input_ptr + candidate_index,
+            static_cast<std::size_t>(infer_param.out_tensor_cols)};
+
         // 类别分支得分：[4,12]分别对应9个类别
         int class_id = 0;
-        double best_class_score = input_mat[4][candidate_index];
+        double best_class_score = candidate[4];
         for (int class_index = 1; class_index < 9; ++class_index)
         {
-            const double class_score = input_mat[4 + class_index][candidate_index];
+            const double class_score = candidate[4 + class_index];
             if (class_score > best_class_score)
             {
                 best_class_score = class_score;
@@ -329,10 +327,10 @@ std::vector<NetArmorResult> V8_21InfantryPostProcessor::postProcessArmorMat(cons
 
         // 颜色分支得分：[0,3]分别对应4种颜色
         int color_id = 0;
-        double best_color_score = input_mat[0][candidate_index];
+        double best_color_score = candidate[0];
         for (int color_index = 1; color_index < 4; ++color_index)
         {
-            const double color_score = input_mat[color_index][candidate_index];
+            const double color_score = candidate[color_index];
             if (color_score > best_color_score)
             {
                 best_color_score = color_score;
@@ -350,8 +348,8 @@ std::vector<NetArmorResult> V8_21InfantryPostProcessor::postProcessArmorMat(cons
         std::vector<cv::Point2f> current_keypoints(4);
         for (int point_index = 0; point_index < 4; ++point_index)
         {
-            const float x = input_mat[13 + point_index * 2][candidate_index];
-            const float y = input_mat[13 + point_index * 2 + 1][candidate_index];
+            const float x = candidate[13 + point_index * 2];
+            const float y = candidate[13 + point_index * 2 + 1];
 
             const float kpt_x = (x - infer_param.pad_x) / infer_param.scale;
             const float kpt_y = (y - infer_param.pad_y) / infer_param.scale;
@@ -424,8 +422,7 @@ std::vector<NetArmorResult> V8InfantryPostProcessor::postProcessArmorMat(const f
     const float confidence_threshold = m_model_config.confidence_threshold;
     const float nms_threshold = m_nms_threshold;
 
-    auto input_mat = buildRowView(input_ptr, infer_param);
-    if (infer_param.out_tensor_rows != (4 + 9 + 4 * 3))
+    if (!input_ptr || infer_param.out_tensor_rows != (4 + 9 + 4 * 3))
     {
         std::cerr << "模型输出形状不匹配，请检查模型路径" << std::endl;
         return {};
@@ -440,15 +437,19 @@ std::vector<NetArmorResult> V8InfantryPostProcessor::postProcessArmorMat(const f
     std::vector<NetArmorResult> results;     // 完整的装甲板检测结果
     const float score_threshold = confidence_threshold;
 
-    // input_mat=25*6300，每列是一组候选结果
+    // V8 25维输出为 25*6300，每列是一组候选结果。
     for (int candidate_index = 0; candidate_index < infer_param.out_tensor_cols; ++candidate_index)
     {
+        const CandidateView candidate{
+            input_ptr + candidate_index,
+            static_cast<std::size_t>(infer_param.out_tensor_cols)};
+
         // 类别分支得分：[4,12]分别对应9个类别
         int class_id = 0;
-        double best_class_score = input_mat[4][candidate_index];
+        double best_class_score = candidate[4];
         for (int class_index = 1; class_index < 9; ++class_index)
         {
-            const double class_score = input_mat[4 + class_index][candidate_index];
+            const double class_score = candidate[4 + class_index];
             if (class_score > best_class_score)
             {
                 best_class_score = class_score;
@@ -462,10 +463,10 @@ std::vector<NetArmorResult> V8InfantryPostProcessor::postProcessArmorMat(const f
 
         // 颜色分支得分：[0,3]分别对应4种颜色
         int color_id = 0;
-        double best_color_score = input_mat[0][candidate_index];
+        double best_color_score = candidate[0];
         for (int color_index = 1; color_index < 4; ++color_index)
         {
-            const double color_score = input_mat[color_index][candidate_index];
+            const double color_score = candidate[color_index];
             if (color_score > best_color_score)
             {
                 best_color_score = color_score;
@@ -483,8 +484,8 @@ std::vector<NetArmorResult> V8InfantryPostProcessor::postProcessArmorMat(const f
         std::vector<cv::Point2f> current_keypoints(4);
         for (int point_index = 0; point_index < 4; ++point_index)
         {
-            const float x = input_mat[13 + point_index * 3 + 0][candidate_index];
-            const float y = input_mat[13 + point_index * 3 + 1][candidate_index];
+            const float x = candidate[13 + point_index * 3 + 0];
+            const float y = candidate[13 + point_index * 3 + 1];
 
             // 还原到原图尺度
             const float kpt_x = (x - infer_param.pad_x) / infer_param.scale;
@@ -574,8 +575,7 @@ std::vector<NetArmorResult> LidarPostProcessor::postProcessArmorMat(const float 
     const float confidence_threshold = m_model_config.confidence_threshold;
     const float nms_threshold = m_nms_threshold;
 
-    auto input_mat = buildRowView(input_ptr, infer_param);
-    if (infer_param.out_tensor_rows != (4 + 10 + 4 * 3))
+    if (!input_ptr || infer_param.out_tensor_rows != (4 + 10 + 4 * 3))
     {
         std::cerr << "模型输出形状不匹配，请检查模型路径" << std::endl;
         return {};
@@ -589,12 +589,16 @@ std::vector<NetArmorResult> LidarPostProcessor::postProcessArmorMat(const float 
     // 雷达网络输出形状为 26*2100，每列是一个预测结果
     for (int current_anchor_box = 0; current_anchor_box < infer_param.out_tensor_cols; current_anchor_box++)
     {
+        const CandidateView candidate{
+            input_ptr + current_anchor_box,
+            static_cast<std::size_t>(infer_param.out_tensor_cols)};
+
         // 置信度最高的类别的索引和置信度
         int best_class_idx = 0;
-        double max_class_conf = input_mat[4][current_anchor_box];
+        double max_class_conf = candidate[4];
         for (int cls = 1; cls < 10; ++cls)
         {
-            double score = input_mat[4 + cls][current_anchor_box];
+            double score = candidate[4 + cls];
             if (score > max_class_conf)
             {
                 max_class_conf = score;
@@ -609,10 +613,10 @@ std::vector<NetArmorResult> LidarPostProcessor::postProcessArmorMat(const float 
         }
 
         // 前四行是锚框的位置和大小
-        float cx_temp = input_mat[0][current_anchor_box];
-        float cy_temp = input_mat[1][current_anchor_box];
-        float w_temp = input_mat[2][current_anchor_box];
-        float h_temp = input_mat[3][current_anchor_box];
+        float cx_temp = candidate[0];
+        float cy_temp = candidate[1];
+        float w_temp = candidate[2];
+        float h_temp = candidate[3];
 
         // 还原到原图尺度
         int lt_x = std::max(0.f, (((cx_temp - 0.5f * w_temp) - infer_param.pad_x) / infer_param.scale) + 0.5f); // lt_x为缩放前原图片中锚框的左上角x值
@@ -629,8 +633,8 @@ std::vector<NetArmorResult> LidarPostProcessor::postProcessArmorMat(const float 
         // keypoints解码(4个关键点)
         for (int kpt_num = 0; kpt_num < 4; kpt_num++)
         {
-            float kpt_x_temp = input_mat[14 + kpt_num * 3 + 0][current_anchor_box]; // x
-            float kpt_y_temp = input_mat[14 + kpt_num * 3 + 1][current_anchor_box]; // y
+            float kpt_x_temp = candidate[14 + kpt_num * 3 + 0]; // x
+            float kpt_y_temp = candidate[14 + kpt_num * 3 + 1]; // y
 
             // 还原到原图尺度
             // 还原到原图尺度
@@ -827,7 +831,7 @@ std::vector<NetRuneResult> RunePostProcessor::postProcessRuneMat(const float *in
     const float confidence_threshold = m_model_config.confidence_threshold;
     const float nms_threshold = m_nms_threshold;
 
-    if (infer_param.out_tensor_rows != (3 + 5 * 3))
+    if (!input_ptr || infer_param.out_tensor_rows != (3 + 5 * 3))
     {
         std::cerr << "模型输出形状不匹配，请检查模型路径" << std::endl;
         return {};
@@ -840,15 +844,17 @@ std::vector<NetRuneResult> RunePostProcessor::postProcessRuneMat(const float *in
     std::vector<NetRuneResult> results;      // 完整的符叶检测结果
 
     // 打符网络形状是 18*6300，每列是一个预测结果
-    auto input_mat = buildRowView(input_ptr, infer_param);
-
     for (int candidate_index = 0; candidate_index < infer_param.out_tensor_cols; ++candidate_index)
     {
+        const CandidateView candidate{
+            input_ptr + candidate_index,
+            static_cast<std::size_t>(infer_param.out_tensor_cols)};
+
         int class_id = 0;
-        float best_class_score = input_mat[0][candidate_index];
+        float best_class_score = candidate[0];
         for (int class_index = 1; class_index < 3; ++class_index)
         {
-            const float class_score = input_mat[class_index][candidate_index];
+            const float class_score = candidate[class_index];
             if (class_score > best_class_score)
             {
                 best_class_score = class_score;
@@ -862,7 +868,7 @@ std::vector<NetRuneResult> RunePostProcessor::postProcessRuneMat(const float *in
         int valid_keypoint_count = 0;
         for (int point_index = 0; point_index < 5; ++point_index)
         {
-            const float keypoint_confidence = input_mat[3 + point_index * 3 + 2][candidate_index];
+            const float keypoint_confidence = candidate[3 + point_index * 3 + 2];
             if (keypoint_confidence > 0.8f)
                 ++valid_keypoint_count;
         }
@@ -873,8 +879,8 @@ std::vector<NetRuneResult> RunePostProcessor::postProcessRuneMat(const float *in
         std::vector<cv::Point2d> current_keypoints(5);
         for (int point_index = 0; point_index < 5; ++point_index)
         {
-            const float x = input_mat[3 + point_index * 3 + 0][candidate_index];
-            const float y = input_mat[3 + point_index * 3 + 1][candidate_index];
+            const float x = candidate[3 + point_index * 3 + 0];
+            const float y = candidate[3 + point_index * 3 + 1];
 
             const float kpt_x = (x - infer_param.pad_x) / infer_param.scale;
             const float kpt_y = (y - infer_param.pad_y) / infer_param.scale;
