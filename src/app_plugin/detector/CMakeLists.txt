@@ -32,14 +32,6 @@ target_link_libraries(main PRIVATE
     opencv_videoio
 )
 
-add_executable(main_test_rune tests/main_test_rune.cpp)
-target_link_libraries(main_test_rune PRIVATE
-    ${lib_name}_lib
-    opencv_core
-    opencv_highgui
-    opencv_videoio
-)
-
 add_executable(main_test_speed tests/main_test_speed.cpp)
 target_link_libraries(main_test_speed PRIVATE
     ${lib_name}_lib

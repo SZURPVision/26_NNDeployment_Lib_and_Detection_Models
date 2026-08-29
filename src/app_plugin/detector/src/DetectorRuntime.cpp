@@ -53,7 +53,7 @@ DetectorProjectPaths resolveProjectPaths(
     requireRegularFile(paths.rune_video, "神符演示视频");
 
     for (const std::string &model_key :
-         {"armor_detect_aim", "armor_detect_outpost", "rune_detect"})
+         {"armor_v8", "armor_v5", "rune_detect"})
     {
         readJsonModelRuntime(JsonConfig{paths.json_path.string(),
                                         model_key,

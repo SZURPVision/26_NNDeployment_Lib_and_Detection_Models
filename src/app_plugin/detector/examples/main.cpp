@@ -5,9 +5,82 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/videoio.hpp>
 
+#include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <optional>
+#include <string>
+#include <vector>
+
+namespace
+{
+struct VideoResult
+{
+    std::uint64_t frames = 0;
+    std::filesystem::path output_path;
+};
+
+VideoResult runArmorDemo(const DetectorProjectPaths &paths,
+                         const std::filesystem::path &output_dir,
+                         const std::string &config_key,
+                         const std::string &model_name,
+                         const std::string &output_filename,
+                         int my_color)
+{
+    NNDetector detector(
+        NNDetector::Task::Armor,
+        JsonConfig{paths.json_path.string(), config_key, paths.model_folder.string()});
+    cv::VideoCapture video = openVideo(paths.armor_video, model_name + " 演示视频");
+    const std::filesystem::path output_path = output_dir / output_filename;
+    cv::VideoWriter writer = createVideoWriter(video, output_path);
+
+    cv::Mat frame;
+    std::uint64_t frame_count = 0;
+    while (video.read(frame))
+    {
+        const std::vector<NetArmorResult> results =
+            detector.detectArmor(frame, my_color);
+        NNDetector::drawArmorResults(frame, results);
+        writer.write(frame);
+        ++frame_count;
+
+        // cv::imshow(model_name + " result", frame);
+        // if (cv::waitKey(1) == 27) break;
+    }
+
+    writer.release();
+    video.release();
+    return {frame_count, output_path};
+}
+
+VideoResult runRuneDemo(const DetectorProjectPaths &paths,
+                        const std::filesystem::path &output_dir)
+{
+    NNDetector detector(
+        NNDetector::Task::Rune,
+        JsonConfig{paths.json_path.string(), "rune_detect", paths.model_folder.string()});
+    cv::VideoCapture video = openVideo(paths.rune_video, "能量机关演示视频");
+    const std::filesystem::path output_path = output_dir / "rune_result.mp4";
+    cv::VideoWriter writer = createVideoWriter(video, output_path);
+
+    cv::Mat frame;
+    std::uint64_t frame_count = 0;
+    while (video.read(frame))
+    {
+        const std::vector<NetRuneResult> results = detector.detectRune(frame);
+        NNDetector::drawRuneResults(frame, results);
+        writer.write(frame);
+        ++frame_count;
+
+        // cv::imshow("Rune result", frame);
+        // if (cv::waitKey(1) == 27) break;
+    }
+
+    writer.release();
+    video.release();
+    return {frame_count, output_path};
+}
+} // namespace
 
 int main(int argc, char **argv)
 {
@@ -19,81 +92,20 @@ int main(int argc, char **argv)
         const std::filesystem::path output_dir = resultDirectory("main");
         constexpr int my_color = 2;
 
-        cv::VideoCapture armor_video = openVideo(paths.armor_video, "装甲板演示视频");
-        cv::Mat armor_frame;
-        if (!armor_video.read(armor_frame) || armor_frame.empty())
-            throw std::runtime_error("装甲板演示视频没有可读取的首帧: " +
-                                     paths.armor_video.string());
+        const VideoResult armor_v5 =
+            runArmorDemo(paths, output_dir, "armor_v5", "Armor V5",
+                         "armor_v5_result.mp4", my_color);
+        const VideoResult armor_v8 =
+            runArmorDemo(paths, output_dir, "armor_v8", "Armor V8",
+                         "armor_v8_result.mp4", my_color);
+        const VideoResult rune = runRuneDemo(paths, output_dir);
 
-        NNDetector v5_detector(
-            NNDetector::Task::Armor,
-            JsonConfig{paths.json_path.string(),
-                       "armor_detect_outpost",
-                       paths.model_folder.string()});
-        v5_detector.detectArmor(armor_frame, my_color);
-        const std::vector<NetArmorResult> v5_results =
-            v5_detector.detectArmor(armor_frame, my_color);
-        std::cout << "V5 results: " << v5_results.size() << std::endl;
-        for (const NetArmorResult &result : v5_results)
-            std::cout << "class_id=" << result.armor_id
-                      << " color_id=" << result.color_id
-                      << " score=" << result.score << std::endl;
-
-        NNDetector v8_detector(
-            NNDetector::Task::Armor,
-            JsonConfig{paths.json_path.string(),
-                       "armor_detect_aim",
-                       paths.model_folder.string()});
-        const std::filesystem::path armor_output =
-            output_dir / "armor_v8_result.mp4";
-        cv::VideoWriter armor_writer = createVideoWriter(armor_video, armor_output);
-        if (!armor_video.set(cv::CAP_PROP_POS_FRAMES, 0))
-            throw std::runtime_error("无法将装甲板演示视频复位到首帧");
-
-        std::uint64_t armor_frames = 0;
-        while (armor_video.read(armor_frame))
-        {
-            const std::vector<NetArmorResult> results =
-                v8_detector.detectArmor(armor_frame, my_color);
-            NNDetector::drawArmorResults(armor_frame, results);
-            armor_writer.write(armor_frame);
-            ++armor_frames;
-
-            // cv::imshow("Armor result", armor_frame);
-            // if (cv::waitKey(1) == 27) break;
-        }
-        armor_writer.release();
-        armor_video.release();
-
-        NNDetector rune_detector(
-            NNDetector::Task::Rune,
-            JsonConfig{paths.json_path.string(),
-                       "rune_detect",
-                       paths.model_folder.string()});
-        cv::VideoCapture rune_video = openVideo(paths.rune_video, "神符演示视频");
-        const std::filesystem::path rune_output = output_dir / "rune_result.mp4";
-        cv::VideoWriter rune_writer = createVideoWriter(rune_video, rune_output);
-
-        cv::Mat rune_frame;
-        std::uint64_t rune_frames = 0;
-        while (rune_video.read(rune_frame))
-        {
-            const std::vector<NetRuneResult> results =
-                rune_detector.detectRune(rune_frame);
-            NNDetector::drawRuneResults(rune_frame, results);
-            rune_writer.write(rune_frame);
-            ++rune_frames;
-
-            // cv::imshow("Rune result", rune_frame);
-            // if (cv::waitKey(1) == 27) break;
-        }
-        rune_writer.release();
-        rune_video.release();
-
-        std::cout << "Armor frames: " << armor_frames << '\n'
-                  << "Armor video: " << armor_output << '\n'
-                  << "Rune frames: " << rune_frames << '\n'
-                  << "Rune video: " << rune_output << std::endl;
+        std::cout << "Armor V5 frames: " << armor_v5.frames << '\n'
+                  << "Armor V5 video: " << armor_v5.output_path << '\n'
+                  << "Armor V8 frames: " << armor_v8.frames << '\n'
+                  << "Armor V8 video: " << armor_v8.output_path << '\n'
+                  << "Rune frames: " << rune.frames << '\n'
+                  << "Rune video: " << rune.output_path << std::endl;
         return 0;
     }
     catch (const std::exception &error)
