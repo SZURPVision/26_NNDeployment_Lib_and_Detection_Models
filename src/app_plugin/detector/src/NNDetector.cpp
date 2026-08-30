@@ -1,178 +1,74 @@
 #include "NNDetector.hpp"
 
-#include <opencv2/imgproc.hpp>
+#include <opencv2/core/persistence.hpp>
 
-#include <algorithm>
-#include <iomanip>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
 namespace
 {
-cv::Point toPoint(const cv::Point2d &point)
+std::size_t pipelineDelay(const JsonConfig &config)
 {
-    return {cvRound(point.x), cvRound(point.y)};
+    cv::FileStorage file(config.json_path, cv::FileStorage::READ);
+    if (!file.isOpened())
+        throw std::runtime_error("无法打开检测配置: " + config.json_path);
+
+    const cv::FileNode node = file[config.model_key];
+    if (node.empty())
+        throw std::runtime_error("检测配置中不存在节点: " + config.model_key);
+
+    const std::string mode = static_cast<std::string>(node["infer_mode"]);
+    if (mode == "sync")
+        return 0;
+    if (mode == "async")
+        return 1;
+    if (mode == "async4")
+        return 3;
+    throw std::runtime_error("不支持的推理模式: " + mode);
 }
 
-void drawLabel(cv::Mat &image, const std::string &text, const cv::Point &origin)
+cv::Mat takeMatchedFrame(std::deque<cv::Mat> &frames, std::size_t delay)
 {
-    int baseline = 0;
-    const cv::Size size = cv::getTextSize(
-        text, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseline);
-    const cv::Point position(
-        std::max(0, origin.x),
-        std::max(size.height + 3, origin.y));
-
-    cv::rectangle(image,
-                  cv::Rect(position.x,
-                           position.y - size.height - 3,
-                           size.width + 6,
-                           size.height + baseline + 6),
-                  cv::Scalar(0, 0, 0),
-                  cv::FILLED);
-    cv::putText(image,
-                text,
-                position + cv::Point(3, 0),
-                cv::FONT_HERSHEY_SIMPLEX,
-                0.5,
-                cv::Scalar(255, 255, 255),
-                1,
-                cv::LINE_AA);
+    if (frames.size() <= delay)
+        return {};
+    cv::Mat matched = std::move(frames.front());
+    frames.pop_front();
+    return matched;
 }
 } // namespace
 
-class NNDetector::Impl
-{
-public:
-    Impl(Task task,
-         const JsonConfig &json_config,
-         const DebugConfig &debug_config)
-        : m_task(task)
-    {
-        if (m_task == Task::Armor)
-            m_armor_model = std::make_unique<ArmorModel>(json_config, debug_config);
-        else
-            m_rune_model = std::make_unique<RuneModel>(json_config, debug_config);
-    }
-
-    std::vector<NetArmorResult> detectArmor(const cv::Mat &image, int my_color)
-    {
-        if (image.empty())
-            throw std::invalid_argument("装甲板检测不能输入空图像");
-        if (!m_armor_model)
-            throw std::logic_error("当前 NNDetector 未配置为装甲板任务");
-        return m_armor_model->netProcess(image, my_color);
-    }
-
-    std::vector<NetRuneResult> detectRune(const cv::Mat &image)
-    {
-        if (image.empty())
-            throw std::invalid_argument("神符检测不能输入空图像");
-        if (!m_rune_model)
-            throw std::logic_error("当前 NNDetector 未配置为神符任务");
-        return m_rune_model->netProcess(image);
-    }
-
-private:
-    Task m_task;
-    std::unique_ptr<ArmorModel> m_armor_model;
-    std::unique_ptr<RuneModel> m_rune_model;
-};
-
-NNDetector::NNDetector(Task task,
-                       const JsonConfig &json_config,
-                       const DebugConfig &debug_config)
-    : m_impl(std::make_unique<Impl>(task, json_config, debug_config))
+ArmorDetector::ArmorDetector(const JsonConfig &config, const DebugConfig &debug)
+    : m_pipeline_delay(pipelineDelay(config)), m_model(config, debug)
 {}
 
-NNDetector::~NNDetector() = default;
-NNDetector::NNDetector(NNDetector &&) noexcept = default;
-NNDetector &NNDetector::operator=(NNDetector &&) noexcept = default;
-
-std::vector<NetArmorResult> NNDetector::detectArmor(const cv::Mat &image,
-                                                    int my_color)
+std::optional<ArmorDetectionFrame> ArmorDetector::process(const cv::Mat &image,
+                                                          int my_color)
 {
-    return m_impl->detectArmor(image, my_color);
+    if (image.empty())
+        throw std::invalid_argument("装甲板检测不能输入空图像");
+
+    m_submitted_frames.push_back(image.clone());
+    std::vector<NetArmorResult> results = m_model.netProcess(image, my_color);
+    cv::Mat matched = takeMatchedFrame(m_submitted_frames, m_pipeline_delay);
+    if (matched.empty())
+        return std::nullopt;
+    return ArmorDetectionFrame{std::move(matched), std::move(results)};
 }
 
-std::vector<NetRuneResult> NNDetector::detectRune(const cv::Mat &image)
+RuneDetector::RuneDetector(const JsonConfig &config, const DebugConfig &debug)
+    : m_pipeline_delay(pipelineDelay(config)), m_model(config, debug)
+{}
+
+std::optional<RuneDetectionFrame> RuneDetector::process(const cv::Mat &image)
 {
-    return m_impl->detectRune(image);
-}
+    if (image.empty())
+        throw std::invalid_argument("能量机关检测不能输入空图像");
 
-void NNDetector::drawArmorResults(
-    cv::Mat &image,
-    const std::vector<NetArmorResult> &results)
-{
-    for (const NetArmorResult &result : results)
-    {
-        if (result.points.size() != 4)
-            throw std::runtime_error("装甲板结果必须包含 4 个关键点");
-
-        for (std::size_t index = 0; index < result.points.size(); ++index)
-        {
-            cv::line(image,
-                     toPoint(result.points[index]),
-                     toPoint(result.points[(index + 1) % result.points.size()]),
-                     cv::Scalar(0, 255, 255),
-                     2,
-                     cv::LINE_AA);
-            cv::circle(image,
-                       toPoint(result.points[index]),
-                       4,
-                       cv::Scalar(0, 255, 0),
-                       cv::FILLED,
-                       cv::LINE_AA);
-        }
-
-        std::ostringstream label;
-        label << "class_id:" << result.armor_id
-              << " color_id:" << result.color_id
-              << " score:" << std::fixed << std::setprecision(2) << result.score;
-        drawLabel(image, label.str(), toPoint(result.points.front()) + cv::Point(0, -12));
-    }
-}
-
-void NNDetector::drawRuneResults(
-    cv::Mat &image,
-    const std::vector<NetRuneResult> &results)
-{
-    constexpr int outline_indices[] = {0, 1, 4, 3};
-
-    for (const NetRuneResult &result : results)
-    {
-        if (result.points.size() != 5)
-            throw std::runtime_error("神符结果必须包含 5 个关键点");
-
-        for (std::size_t index = 0; index < std::size(outline_indices); ++index)
-        {
-            const int current = outline_indices[index];
-            const int next = outline_indices[(index + 1) % std::size(outline_indices)];
-            cv::line(image,
-                     toPoint(result.points[current]),
-                     toPoint(result.points[next]),
-                     cv::Scalar(255, 255, 0),
-                     2,
-                     cv::LINE_AA);
-            cv::circle(image,
-                       toPoint(result.points[current]),
-                       4,
-                       cv::Scalar(0, 255, 255),
-                       cv::FILLED,
-                       cv::LINE_AA);
-        }
-        cv::circle(image,
-                   toPoint(result.points[2]),
-                   5,
-                   cv::Scalar(0, 255, 0),
-                   cv::FILLED,
-                   cv::LINE_AA);
-
-        std::ostringstream label;
-        label << "class_id:" << result.class_id
-              << " score:" << std::fixed << std::setprecision(2) << result.score;
-        drawLabel(image, label.str(), toPoint(result.points.front()) + cv::Point(0, -12));
-    }
+    m_submitted_frames.push_back(image.clone());
+    std::vector<NetRuneResult> results = m_model.netProcess(image);
+    cv::Mat matched = takeMatchedFrame(m_submitted_frames, m_pipeline_delay);
+    if (matched.empty())
+        return std::nullopt;
+    return RuneDetectionFrame{std::move(matched), std::move(results)};
 }

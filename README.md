@@ -1,9 +1,9 @@
 # NNdeployment｜RoboMaster 视觉模型统一部署库
 
-写在前面：当前的readme尚不完善，许多测试数据待补充，细节还不够完善，预计会在2-3天内完成补丁，不便之处请多谅解。着急使用的同学可以直接参考src/core/NNdeployment中的README，调用interface中的接口直接使用，请注意异步推理的前1/3张图片为空图，如果使用RobotPilots战队的自瞄开源框架，也可以直接使用src中的detector插件。
+如果只需要部署库接口，可直接阅读 `src/core/algorithm/NNdeployment/README.md` 并调用 `interface` 中的公开类；需要离线视频接入示例时，可使用 `src/app_plugin/detector`。该插件会为流水推理缓存输入帧，使异步结果与对应画面保持一致。
 
 > [!IMPORTANT]
-> 本项目主体为 `src/core/algorithm/NNdeployment`。该目录中的部署库代码暂按原有实现维护；`src/app_plugin/detector` 仅提供公开接口的最小接入示例，不包含相机驱动、串口通信、目标预测、弹道解算或机器人控制系统，但符合RobotPilots战队视觉组代码框架开源。本节同步自项目的 [RoboMaster RobotPilots战队-视觉模型统一部署库与识别模型开源](https://bbs.robomaster.com/article/1942761?source=4)。。
+> 本项目主体为 `src/core/algorithm/NNdeployment`。该目录中的部署库代码暂按原有实现维护；`src/app_plugin/detector` 仅提供公开接口的最小接入示例，不包含相机驱动、串口通信、目标预测、弹道解算或机器人控制系统。本节同步自项目的 [RoboMaster RobotPilots战队-视觉模型统一部署库与识别模型开源](https://bbs.robomaster.com/article/1942761?source=4)。
 
 `NNdeployment` 是面向 RoboMaster 视觉任务的 C++ 网络部署库。项目以统一接口封装模型预处理、推理与后处理，当前支持 V5/V8 装甲板四关键点、雷达四关键点和能量机关五关键点结果解析，可在构建时选择 OpenVINO 或 TensorRT 推理后端。
 
@@ -22,7 +22,8 @@
 - [7. 算法原理](#7-算法原理)
 - [8. 接口与配置](#8-接口与配置)
 - [9. 目录结构](#9-目录结构)
-- [10. 参考与许可证](#10-参考与许可证)
+- [10. 未来优化方向](#10-未来优化方向)
+- [11. 参考与许可证](#11-参考与许可证)
 
 ## 1. 环境、编译与快速运行
 
@@ -33,7 +34,7 @@
 | Linux | x86_64；已验证 Ubuntu 22.04 | `/proc/self/exe` 路径解析与运行环境 |
 | C++ 编译器 | 支持 C++20 | 编译全部目标 |
 | CMake | 3.22 或更高版本 | 工程配置与构建 |
-| OpenCV | `core`、`imgproc`、`dnn`、`videoio`、`highgui` | 图像、后处理、视频与可选 GUI |
+| OpenCV | `core`、`imgproc`、`dnn`、`videoio` | 图像、后处理与视频读写 |
 | OpenVINO | C++ Runtime | 默认推理后端 |
 | OpenVINO Benchmark Tool | `benchmark_app` 位于 `PATH` | `main_test_speed` 官方性能测试 |
 | CUDA Toolkit | 与 TensorRT 匹配 | TensorRT 构建与运行 |
@@ -47,16 +48,9 @@
 - 运行随仓示例不需要工业相机、串口、下位机或云台。
 - TensorRT 序列化引擎通常与 GPU 架构、CUDA 和 TensorRT 版本绑定，环境变化后应从 ONNX 重新生成兼容引擎。
 
-### 1.2 安装基础工具、OpenCV 与 OpenVINO
+### 1.2 安装 OpenCV 与 OpenVINO
 
-以下命令面向 **Ubuntu 22.04 x86_64**。先安装编译工具：
-
-```bash
-sudo apt update
-sudo apt install -y \
-  build-essential cmake ninja-build pkg-config \
-  git curl wget gnupg
-```
+本项目要求可用的 C++20 编译环境和 CMake 3.22 以上版本，本节不展开 GCC、G++、CMake 或 VS Code 的安装配置。
 
 #### OpenCV（推荐：Ubuntu APT）
 
@@ -71,11 +65,10 @@ pkg-config --modversion opencv4
 
 #### OpenCV（可选：从源码构建）
 
-只有需要固定 OpenCV 版本或自定义编译选项时才使用此方式；请不要再同时安装 APT 版本，以免 CMake 找到错误的 OpenCV。下面以 OpenCV 4.10.0 为例，仅构建本项目需要的模块并启用视频编解码与 GUI 支持：
+只有需要固定 OpenCV 版本或自定义编译选项时才使用此方式；请不要再同时安装 APT 版本，以免 CMake 找到错误的 OpenCV。下面以 OpenCV 4.10.0 为例，仅构建本项目需要的模块并启用视频编解码：
 
 ```bash
 sudo apt install -y \
-  libgtk-3-dev \
   libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libavdevice-dev \
   libjpeg-dev libpng-dev libtiff-dev
 
@@ -84,9 +77,8 @@ git clone --depth 1 --branch 4.10.0 https://github.com/opencv/opencv.git
 cmake -S opencv -B opencv-build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX=/usr/local \
-  -DBUILD_LIST=core,imgproc,dnn,videoio,highgui,imgcodecs \
+  -DBUILD_LIST=core,imgproc,dnn,videoio \
   -DWITH_FFMPEG=ON \
-  -DWITH_GTK=ON \
   -DBUILD_TESTS=OFF \
   -DBUILD_PERF_TESTS=OFF \
   -DBUILD_EXAMPLES=OFF \
@@ -137,7 +129,7 @@ Benchmark Tool 的参数说明见 [OpenVINO Benchmark Tool 文档](https://docs.
 
 ### 1.3 构建 OpenVINO 版本
 
-在仓库根目录执行：
+推荐使用 VS Code 的 CMake Tools 插件配置并构建工程，随后直接选择综合演示 `main`、性能测试 `main_test_speed` 或自动测试 `detector_smoke_test`。也可以在仓库根目录执行：
 
 ```bash
 cmake -S . -B build \
@@ -146,9 +138,7 @@ cmake -S . -B build \
 cmake --build build -j
 ```
 
-或直接使用 VSCODE 的 `cmake` 插件，编译后选择综合演示 `main` 和性能测试 `main_test_speed`运行（推荐）。
-
-生成的共享库位于 `build/lib`，综合演示 `main` 和性能测试 `main_test_speed` 位于 `build/bin`。
+生成的共享库位于 `build/lib`，可执行文件位于 `build/bin`。
 
 ### 1.4 构建 TensorRT 版本（可选）
 
@@ -169,7 +159,7 @@ cmake --build build-trt -j
 ./build/bin/main
 ```
 
-`main` 在一次运行中完成三个模型的离线演示：`armor_v5` 和 `armor_v8` 分别处理完整的 `测试视频/中距离陀螺.avi`，`rune_detect` 处理完整的 `测试视频/符.avi`。三个结果视频分别写入：
+`main` 在一次运行中完成三个模型的离线演示：`armor_v5` 和 `armor_v8` 读取 `测试视频/装甲板.mp4` 的中间 10 秒，`rune_detect` 读取 `测试视频/符.avi` 的中间 10 秒。输出画面包含目标框、类别和关键点序号；异步装甲板模型的输出不包含尚未返回结果的末尾流水帧。结果视频写入：
 
 - `build/results/main/armor_v5_result.mp4`
 - `build/results/main/armor_v8_result.mp4`
@@ -185,9 +175,13 @@ cmake --build build-trt -j
 
 当前测试程序依次读取 `armor_v8`、`armor_v5` 和 `rune_detect` 配置，并使用相应测试视频的首帧分别连续推理 2000 次，输出部署库各阶段统计；随后使用相同模型、设备和推理模式运行 20 秒 `benchmark_app`。结果追加写入 `build/bin/network_mpt.log`。
 
-程序会检查 JSON、模型、视频、画面尺寸、FPS 与视频写入器；失败时打印解析后的路径并返回非零状态。输入视频 FPS 无效时，输出视频回退为 30 FPS。
+独立自动测试：
 
-示例默认注释 `cv::imshow` 与 `cv::waitKey`，无需图形界面。桌面环境中可在 `main.cpp` 取消对应注释并重新构建，此时会弹出实时窗口演示；按 `Esc` 结束当前视频循环。
+```bash
+ctest --test-dir build --output-on-failure -R '^detector_smoke$'
+```
+
+`detector_smoke_test` 位于 `src/app_plugin/detector/tests`，使用独立的 CPU 配置检查 V5、V8、Rune 的模型加载与首帧推理、空白图像空结果、空输入和错误配置，不参与综合演示或性能测试。
 
 ## 2. 核心特性
 
@@ -213,7 +207,7 @@ cmake --build build-trt -j
 | --- | --- | --- |
 | `points` | `std::vector<cv::Point2d>` | 原图像素坐标系下的四个角点，顺序为左上、左下、右下、右上 |
 | `armor_id` | `int` | 装甲板类别 ID，与开源模型的 Class ID 定义一致 |
-| `color_id` | `int` | 后处理后的颜色 ID；当前装甲板结果中 `0` 为蓝色、`1` 为红色 |
+| `color_id` | `int` | 后处理后的颜色 ID；当前装甲板结果中 `0` 为蓝色、`1` 为红色、`2` 为白色 |
 | `size` | `int` | 装甲板尺寸，`0` 为小装甲板、`1` 为大装甲板 |
 | `score` | `double` | 检测结果置信度 |
 | `class_name` | `std::string` | `armor_id` 对应的类别名称 |
@@ -285,6 +279,20 @@ cmake --build build-trt -j
 
 需要特别说明的是：`Infantry-v5n-20250725` 训练时（2025年）未包含兑换站，实际使用中可能误识别己方兑换站，应结合正确的部署与目标筛选降低影响；且该模型本身并不能很好识别白色和紫色，如果有白色装甲板识别需要，请使用`Infantry-v8n-20260726`。
 
+#### Infantry V8 训练记录
+
+Armor mAP 先用四关键点的外接框匹配预测与标注，再按装甲板类别计算平均精度；Color top1 统计几何匹配结果的颜色首选分类；Pose precision 在几何匹配后继续判断四关键点的一致性。`@50` 表示单一匹配阈值，`@50-75` 表示多个阈值的平均结果。
+
+训练共 250 轮，使用 batch 16、640 输入尺寸和 AdamW。模型选择指标由 Armor mAP50、Color top1@50 和 Pose precision@50 共同构成，最佳 checkpoint 出现在第 127 轮；随仓模型使用该 checkpoint，不使用末期验证损失略有回升的 `last` checkpoint。
+
+| checkpoint | Armor mAP50 | Color top1@50 | Pose precision@50 | Armor mAP50-75 | Color top1@50-75 | Pose precision@50-75 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 127 | 99.15% | 94.13% | 94.14% | 98.28% | 93.49% | 93.50% |
+
+| 训练、验证损失与指标曲线 | 归一化混淆矩阵 | Armor Precision-Recall 曲线 |
+| --- | --- | --- |
+| ![Infantry V8 训练与验证曲线](resource/images/infantry_v8_training_curves.png) | ![Infantry V8 归一化混淆矩阵](resource/images/infantry_v8_confusion_matrix_normalized.png) | ![Infantry V8 Armor PR 曲线](resource/images/infantry_v8_armor_pr_curve.png) |
+
 能量机关模型 `Rune-v8n-fp16-20260624` 和 装甲板模型 `Infantry-v8n-20260726` 同时提供 ONNX FP16 与 OpenVINO FP16 文件。其中 `Rune-v8n-fp16-20260624` 已在 [RuneDetectionModel开源仓库](https://github.com/SZURPVision/RuneDetectionModel) 和 [RoboMaster RobotPilots战队-能量机关五点识别模型](https://bbs.robomaster.com/article/1939101?source=4) 中单独开源，本仓库负责统一部署、五关键点解码与结构化结果封装。
 
 ### 4.2 测试视频
@@ -302,21 +310,73 @@ cmake --build build-trt -j
 | `远距离平移.avi` | 远距离平移运动 `armor` 一致性测试 |
 | `远距离陀螺.avi` | 远距离旋转运动 `armor` 一致性测试 |
 
-`装甲板.mp4` 和 `符.avi` 主要用于检测部署库功能是否完整，通过检查输出视频可以确认部署库是否正确部署。随仓附加6个测试视频，用于PNP一致性检测，相机内参与畸变参数见仓库（待补充）
+`装甲板.mp4` 和 `符.avi` 用于检查部署流程，其余 6 个视频用于第 5.3 节的一致性测试。
 
 ## 5. 效果展示与定量分析
 
 ### 5.1 性能快照
 
-以下结果取自仓库根目录 `network_mpt.log`。测试设备为 Intel NUC13（Core i7 / i5、32 GB 双通道内存），使用 OpenVINO GPU（Intel iGPU）推理。测试的部署配置见表格中的 `推理模式`，匹配国赛时的真实需求。
+#### Intel NUC13
 
-| 设备 | 模型 | 推理模式 | 平均预处理 | 平均推理 | 平均后处理 | 平均总耗时 | 端到端 FPS |
+以下结果测试设备为 Intel NUC13，使用 OpenVINO GPU（Intel iGPU）推理。
+
+| 设备 | 模型 | 推理模式 | 平均预处理/ms | 平均推理/ms | 平均后处理/ms | 平均总耗时/ms | 端到端 FPS |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Intel NUC13<br>Core i7 / i5，32 GB 双通道 | Armor V5-20250725 | `async` | 0.995 | 4.289 | 0.273 | 5.557 | 179.95 |
-| Intel NUC13<br>Core i7 / i5，32 GB 双通道 | Armor V8-20260726 | `async` | 0.691 | 5.771 | 0.098 | 6.561 | 152.43 |
-| Intel NUC13<br>Core i7 / i5，32 GB 双通道 | Rune V8-20260624 | `sync` | 0.518 | 7.407 | 0.017 | 7.943 | 125.90 |
+| Intel NUC13 | Armor V5-20250725 | `async` | 0.995 | 4.289 | 0.273 | 5.557 | 179.95 |
+| Intel NUC13 | Armor V8-20260726 | `async` | 0.691 | 5.771 | 0.098 | 6.561 | 152.43 |
+| Intel NUC13 | Rune V8-20260624 | `sync` | 0.518 | 7.407 | 0.017 | 7.943 | 125.90 |
 
-结果随 OpenVINO 版本、Intel GPU 驱动、设备功耗、温度和系统负载变化。
+#### RTX 4090 测试设备
+
+测试设备为 Intel Core i7-10700F、NVIDIA GeForce RTX 4090 24 GB，OpenVINO 使用设备为 `GPU`。
+
+| 设备 | 模型 | 推理模式 | 平均预处理/ms | 平均推理/ms | 平均后处理/ms | 平均总耗时/ms | 端到端 FPS | Benchmark FPS |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| i7-10700F / RTX 4090 | Armor V5-20250725 | `async` | 0.355 | 1.787 | 0.299 | 2.441 | 409.75 | 445.86 |
+| i7-10700F / RTX 4090 | Armor V8-20260726 | `async` | 0.292 | 2.647 | 0.240 | 3.179 | 314.59 | 294.29 |
+| i7-10700F / RTX 4090 | Rune V8-20260624 | `sync` | 0.309 | 3.940 | 0.081 | 4.330 | 230.96 | 248.06 |
+
+**请注意**：`Rune-v8n-fp16-20260624`使用的是 `sync` 部署模式，该配置是基于国赛版本对打符的低延迟需求的匹配。改用 `async` 模式后使用该模型的推理速度要略快于 `Infantry-v8n-20260726` 。
+
+性能结果随 OpenVINO 版本、GPU 驱动、设备功耗、温度和系统负载变化。
+
+### 5.2 中段视频展示
+
+以下结果分别截取 `装甲板.mp4` 和 `符.avi` 居中的 10 秒。装甲板结果使用 V8 模型；点击预览图可打开完整视频。视频源文件见 `resource/videos` 。
+
+| Infantry V8 装甲板 | Rune V8 能量机关 |
+| --- | --- |
+| [![Infantry V8 中段 10 秒检测结果](resource/images/armor_v8_showcase.jpg)](resource/videos/armor_v8_showcase.mp4) | [![Rune V8 中段 10 秒检测结果](resource/images/rune_showcase.jpg)](resource/videos/rune_showcase.mp4) |
+
+装甲板四点顺序为 `0 左上、1 左下、2 右下、3 右上`。能量机关五点顺序为 `0 top、1 left、2 R、3 right、4 bottom`，框线依次连接 `0、1、4、3`。
+
+### 5.3 六视频一致性测试
+
+两套 Infantry 模型均使用 OpenVINO、CPU、同步推理和 `0.5` 置信度阈值。6 个视频只包含工程装甲板，`检出数` 为后处理输出总数，`误识别率` 为非工程输出数占总检出数的比例。
+
+PnP 一致性指标使用四关键点、相机内参和畸变参数解算 yaw、pitch 与距离；同一帧内先对同类别装甲板的 PnP 结果取平均，再根据相邻帧变化计算平均帧残差。该指标用于描述输出的时间一致性。
+
+| 视频 | 模型 | 检出数 | 误识别率 | Yaw 平均帧残差/° | Pitch 平均帧残差/° | 距离平均帧残差/mm |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 近距离上下陀螺 | V5 | 3,216 | 0.0000% | 1.132 | 0.188 | 55.63 |
+| 近距离上下陀螺 | V8 | 3,361 | 0.0000% | 1.083 | 0.174 | 49.03 |
+| 近距离陀螺 | V5 | 3,248 | 0.0000% | 1.091 | 0.188 | 62.19 |
+| 近距离陀螺 | V8 | 3,432 | 0.0000% | 1.070 | 0.171 | 52.76 |
+| 中距离陀螺 | V5 | 3,846 | 0.0000% | 0.776 | 0.122 | 65.19 |
+| 中距离陀螺 | V8 | 4,029 | 0.0000% | 0.752 | 0.113 | 62.98 |
+| 远处旋转平移 | V5 | 2,769 | 0.0000% | 0.491 | 0.046 | 105.62 |
+| 远处旋转平移 | V8 | 2,913 | 0.2403% | 0.476 | 0.051 | 96.12 |
+| 远距离平移 | V5 | 1,546 | 0.0000% | 0.035 | 0.005 | 37.74 |
+| 远距离平移 | V8 | 1,546 | 0.0000% | 0.035 | 0.005 | 26.24 |
+| 远距离陀螺 | V5 | 3,656 | 0.0000% | 0.628 | 0.091 | 85.33 |
+| 远距离陀螺 | V8 | 3,944 | 0.0000% | 0.568 | 0.082 | 85.26 |
+
+| 模型 | 实际解码帧数 | 有检出的帧数 | 检出数 | 类别误识别数 | 总误识别率 | Yaw 平均帧残差/° | Pitch 平均帧残差/° | 距离平均帧残差/mm |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Infantry V5-20250725 | 12,779 | 12,779 | 18,281 | 0 | 0.0000% | 0.725 | 0.112 | 69.90 |
+| Infantry V8-20260726 | 12,779 | 12,779 | 19,225 | 7 | 0.0364% | 0.694 | 0.104 | 63.97 |
+
+V8 比 V5 多检出 944 个目标，7 次类别误识别均出现在“远处旋转平移”视频；三项 PnP 平均帧残差均略低。
 
 ## 6. 系统设计
 
@@ -363,7 +423,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     A[应用层<br/>main / main_test_speed]
-    B[接入层<br/>NNDetector / DetectorRuntime]
+    B[接入层<br/>ArmorDetector / RuneDetector]
     C[公开接口层<br/>ArmorModel / RuneModel / JsonConfig]
     D[预处理层<br/>resize / letterbox]
     E[推理抽象层<br/>InferenceEngine]
@@ -377,7 +437,7 @@ flowchart LR
 | 层级 | 主要职责 | 主要位置 |
 | --- | --- | --- |
 | 应用层 | 组织视频循环、性能测试和结果输出 | `src/app_plugin/detector/examples`、`tests` |
-| 接入层 | 校验输入、选择任务、解析项目路径、绘制结果 | `src/app_plugin/detector` |
+| 接入层 | 持有任务模型，并对齐异步结果与输入帧 | `src/app_plugin/detector` |
 | 公开接口层 | 隐藏内部实现并提供稳定结果结构 | `NNdeployment/interface` |
 | 预处理层 | 保持长宽比缩放、填充并记录逆变换参数 | `src/preprocess` |
 | 推理层 | 管理模型、张量、同步或异步请求及设备资源 | `src/inference` |
@@ -436,9 +496,9 @@ $$
 
 ### 7.3 同步与异步推理
 
-`sync` 模式完成当前帧推理后立即返回当前帧结果，适合关注单帧延迟的任务。`async` 使用两个请求槽位，一边提交新帧，一边等待并读取上一槽位结果；`async4` 以相同方式轮转四个请求。异步模式通过并行重叠提高连续输入吞吐，但返回结果相对输入存在流水线延迟，调用方必须维护帧与结果的对应关系。
+`sync` 模式完成当前帧推理后立即返回当前帧结果，适合关注单帧延迟的任务。`async` 使用两个请求槽位，一边提交新帧，一边等待并读取上一槽位结果；`async4` 以相同方式轮转四个请求。异步模式通过并行重叠提高连续输入吞吐，但返回结果相对输入存在流水线延迟。
 
-以装甲板任务使用的 `async` 模式为例：部署库初始化时会向请求槽位中传入一张空图片作为预热，当外部传入一张图片（image1）时，将会返回空图的识别结果；当外部传入第二张图片（image2）时，将会返回第一张图片（image1）的识别结果。部署库保证传入顺序和输出顺序一致。
+`ArmorDetector` 与 `RuneDetector` 根据 JSON 中的推理模式缓存输入帧：`sync` 不延迟，`async` 延迟 1 帧，`async4` 延迟 3 帧。`process` 在预热期间返回 `std::nullopt`，之后把检测结果和对应的原始画面一并返回，调用方无需自行维护帧序。视频结束时仍在流水线中的最后 1 或 3 帧不会被重复送入模型，因此综合演示的异步输出会比输入少相应帧数。
 
 ### 7.4 后处理解码与非极大值抑制
 
@@ -469,29 +529,29 @@ $$
 ### 8.1 最小调用示例
 
 ```cpp
-#include "network_deployment_interface.hpp"
+#include "NNDetector.hpp"
 
-// 构建配置文件，参数分别为：json文件相对地址，模型配置键名，模型相对地址前缀
 JsonConfig armor_config{
     "src/app_plugin/detector/config/detect.json",
     "armor_v8",
     "所有模型/openvino"};
-// 创建推理类
-ArmorModel armor_model(armor_config);
-// 调用接口获取装甲板识别结果
-std::vector<NetArmorResult> armors = armor_model.netProcess(frame, 1);
+ArmorDetector armor_detector(armor_config);
+if (auto output = armor_detector.process(frame, 1)) {
+    // output->image 与 output->results 属于同一输入帧；异步预热期间没有 output。
+    consume(output->image, output->results);
+}
 
-
-// Rune同理
 JsonConfig rune_config{
     "src/app_plugin/detector/config/detect.json",
     "rune_detect",
     "所有模型/openvino"};
-RuneModel rune_model(rune_config);
-std::vector<NetRuneResult> runes = rune_model.netProcess(frame);
+RuneDetector rune_detector(rune_config);
+if (auto output = rune_detector.process(frame)) {
+    consume(output->image, output->results);
+}
 ```
 
-无有效检测结果时，模型接口返回空 `vector`。
+预热结束后，即使画面中没有有效目标，`process` 也会返回对应画面，其中 `results` 是空 `vector`。
 
 ### 8.2 JSON 配置
 
@@ -511,8 +571,6 @@ std::vector<NetRuneResult> runes = rune_model.netProcess(frame);
 | `postprocess_mode` | `auto` 或显式后处理类型 |
 | `device` | OpenVINO 设备名，例如 `CPU` 、 `GPU` 或 `NPU` |
 | `score_threshold` | 候选置信度阈值 |
-
-**注意**：模型路径同时被要求出现在 `JsonConfig` 的第三个参数中和 `JSON` 配置的第一个参数中，两者拼接时才是完整路径。该设计符合RobotPilots算法框架的设计.如果没有特别需要，也可以将`JsonConfig` 的第三个参数设置为空字符串，在`JSON` 配置中填入完整模型路径。
 
 ## 9. 目录结构
 
@@ -538,18 +596,29 @@ std::vector<NetRuneResult> runes = rune_model.netProcess(frame);
 │       ├── include/                       # 接入层公开头文件
 │       ├── src/                           # 接入层实现
 │       ├── examples/main.cpp              # V5、V8 与能量机关综合演示
-│       ├── tests/main_test_speed.cpp      # 性能测试
+│       ├── tests/
+│       │   ├── detector_smoke_test.cpp    # 独立自动测试
+│       │   ├── detector_smoke.json        # 自动测试 CPU 配置
+│       │   └── main_test_speed.cpp        # 性能测试
 │       └── CMakeLists.txt
+├── resource/
+│   ├── images/                            # README 图片与视频预览图
+│   └── videos/                            # 中段 10 秒展示视频
 ├── 所有模型/
 │   ├── onnx/                              # 可交换模型
-│   ├── openvino/                          # OpenVINO IR（XML + BIN）
-│   └── tensorrt/                          # TensorRT 序列化引擎
+│   └── openvino/                          # OpenVINO IR（XML + BIN）
 └── 测试视频/                              # 离线复现素材
 ```
 
-## 10. 参考与许可证
+## 10. 未来优化方向
 
-### 10.1 参考文献
+- 建立完整、可复现的固定评估流程，补齐不同距离、运动、遮挡与曝光条件下的召回率、精度和分类指标。
+- 继续提升模型在远距离、强旋转、遮挡和单灯条等边缘情况下的分类能力。
+- 进一步拆解 YOLOv5 与 YOLOv8 的架构、训练策略和任务头差异，研究两者在数据集基本相同时训练效果显著不同的原因。
+
+## 11. 参考与许可证
+
+### 11.1 参考文献
 
 项目文档组织与任务背景参考了以下公开资料。外部项目的实现、数据、图片、性能结论和许可证不自动适用于本仓库。
 
@@ -559,7 +628,7 @@ std::vector<NetRuneResult> runes = rune_model.netProcess(frame);
 
 第三方运行依赖分别受其自身许可约束，包括 [OpenCV](https://github.com/opencv/opencv/blob/4.x/LICENSE)、[OpenVINO](https://github.com/openvinotoolkit/openvino/blob/master/LICENSE)、[CUDA Toolkit](https://docs.nvidia.com/cuda/eula/index.html) 与 [TensorRT](https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/eula.html)。
 
-### 10.2 致谢
+### 11.2 致谢
 感谢2026赛季全体视觉组同学，尤其是梯队队员在数据集上给予我的大力支持，很抱歉今年给你们派了太多数据集，非常感谢你们支持网络组的工作。
 
 感谢段神提供的快速标注的数据集，在分区赛期间提供了关键的基地装甲板。今年请务必继续大力支持27届网络组的数据集工作，劳者多牢。
@@ -572,8 +641,8 @@ std::vector<NetRuneResult> runes = rune_model.netProcess(frame);
 
 再次感谢各位视觉组同学的大力帮助。
 
-### 10.3 开源许可证
+### 11.3 开源许可证
 
-本仓库根目录已提供 [`LICENSE`](LICENSE)，其中声明本项目采用 **MIT License**，版权归 `SZURPVision`（2026）所有。对于由本项目作者持有权利的源码与文档，使用者可以在保留原版权声明和许可声明的前提下使用、复制、修改、合并、发布、分发、再许可或销售副本；软件按“现状”提供，不附带任何明示或默示担保。
+本仓库根目录的 [`LICENSE`](LICENSE) 对作者持有权利的源码与文档采用 **MIT License**，版权归 `SZURPVision`（2026）所有。使用与分发时须保留版权和许可声明，软件按“现状”提供。
 
-仓库中若有单独标注来源或许可证的第三方代码、模型、数据、视频及其他素材，则仍适用其各自的许可和再分发条件；根目录 MIT License 不会取代第三方权利人的授权要求。OpenCV、OpenVINO、CUDA Toolkit 与 TensorRT 等运行依赖也分别受其自身许可证约束。
+本仓库内随附的代码、模型、数据、视频、图片和文档均可随仓公开与再分发。OpenCV、OpenVINO、CUDA Toolkit 与 TensorRT 等外部运行依赖仍适用各自的许可证。

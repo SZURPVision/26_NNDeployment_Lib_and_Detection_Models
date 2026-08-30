@@ -2,37 +2,48 @@
 
 #include "network_deployment_interface.hpp"
 
-#include <memory>
+#include <cstddef>
+#include <deque>
+#include <optional>
 #include <vector>
 
-class NNDetector final
+struct ArmorDetectionFrame
+{
+    cv::Mat image;
+    std::vector<NetArmorResult> results;
+};
+
+struct RuneDetectionFrame
+{
+    cv::Mat image;
+    std::vector<NetRuneResult> results;
+};
+
+class ArmorDetector final
 {
 public:
-    enum class Task
-    {
-        Armor,
-        Rune
-    };
+    explicit ArmorDetector(const JsonConfig &config,
+                           const DebugConfig &debug = DebugConfig());
 
-    NNDetector(Task task,
-               const JsonConfig &json_config,
-               const DebugConfig &debug_config = DebugConfig());
-    ~NNDetector();
-
-    NNDetector(const NNDetector &) = delete;
-    NNDetector &operator=(const NNDetector &) = delete;
-    NNDetector(NNDetector &&) noexcept;
-    NNDetector &operator=(NNDetector &&) noexcept;
-
-    std::vector<NetArmorResult> detectArmor(const cv::Mat &image, int my_color);
-    std::vector<NetRuneResult> detectRune(const cv::Mat &image);
-
-    static void drawArmorResults(cv::Mat &image,
-                                 const std::vector<NetArmorResult> &results);
-    static void drawRuneResults(cv::Mat &image,
-                                const std::vector<NetRuneResult> &results);
+    std::optional<ArmorDetectionFrame> process(const cv::Mat &image,
+                                               int my_color);
 
 private:
-    class Impl;
-    std::unique_ptr<Impl> m_impl;
+    std::size_t m_pipeline_delay;
+    ArmorModel m_model;
+    std::deque<cv::Mat> m_submitted_frames;
+};
+
+class RuneDetector final
+{
+public:
+    explicit RuneDetector(const JsonConfig &config,
+                          const DebugConfig &debug = DebugConfig());
+
+    std::optional<RuneDetectionFrame> process(const cv::Mat &image);
+
+private:
+    std::size_t m_pipeline_delay;
+    RuneModel m_model;
+    std::deque<cv::Mat> m_submitted_frames;
 };
