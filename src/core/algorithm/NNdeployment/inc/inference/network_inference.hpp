@@ -7,7 +7,7 @@
 class YOLOModel::InferenceEngine
 {
 public:
-    InferenceEngine(const ModelConfig &modelconfig, const DebugConfig &debugconfig);
+    InferenceEngine(const ModelConfig &model_config, const DebugConfig &debug_config);
     virtual ~InferenceEngine() = default;
 
     virtual int inputWidth() const = 0;

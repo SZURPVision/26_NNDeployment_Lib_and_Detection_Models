@@ -46,7 +46,7 @@ cv::Mat YOLOModel::InferenceEngine::preProcessImage(const cv::Mat &origin_image)
         return output_buffer;
     }
 
-    // 长宽比不同情况下，需要copy一次实现padding，此处为防御代码，正常来说不应该进入
+    // 长宽比不同情况下，需要copy一次实现padding，此处为防御代码，正常来说不应该进入（V5模型训练时仍然是 640 * 640，则此处会进行padding）
     cv::Mat resized_view;
     cv::resize(origin_image, resized_view, cv::Size(new_width, new_height), 0, 0, cv::INTER_LINEAR);
 

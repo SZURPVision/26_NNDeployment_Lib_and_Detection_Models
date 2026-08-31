@@ -8,14 +8,16 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <unistd.h>
 
+// 写给 rp 网络组的同学：performance 相关内容（MPT部分）不需要阅读，该部分代码大部分是统计换算和文本解析且非常繁琐，该部分是26赛季全 AI 生成的，后续如果需要改动该部分内容，可以直接 AI 重写，不要花精力在具体代码上
+
 // 性能支持模块：部署库端到端分阶段统计，以及独立的 benchmark_app 官方基准。
+// 端到端推理更符合上车实际性能，benchmark 统计的是在GPU被不断送入图片，保持最高并发状态下，单 GPU 推理的耗时性能，实际运行无法达到该速度
 // 两类结果的统计范围不同，调用方应分别记录，不直接横向比较。
 
 namespace MPT
@@ -34,33 +36,11 @@ struct EndToEndResult
     double average_fps = 0.0;
 };
 
-std::mutex &endToEndResultMutex()
-{
-    static std::mutex mutex;
-    return mutex;
-}
-
-EndToEndResult &latestEndToEndResult()
-{
-    static EndToEndResult result;
-    return result;
-}
-
-void recordEndToEndResult(const EndToEndResult &result)
-{
-    std::lock_guard<std::mutex> lock(endToEndResultMutex());
-    latestEndToEndResult() = result;
-}
-
-EndToEndResult takeEndToEndResult()
-{
-    std::lock_guard<std::mutex> lock(endToEndResultMutex());
-    const EndToEndResult result = latestEndToEndResult();
-    latestEndToEndResult() = {};
-    return result;
-}
+std::mutex end_to_end_mutex;
+EndToEndResult latest_end_to_end_result;
 } // namespace detail
 
+// 累加一次预处理、推理和后处理耗时。
 void SpeedStats::update(double preprocess_us, double inference_us, double postprocess_us)
 {
     m_total_preprocess_us += preprocess_us;
@@ -71,6 +51,7 @@ void SpeedStats::update(double preprocess_us, double inference_us, double postpr
     ++m_call_count;
 }
 
+// 计算并输出当前累计耗时统计。
 void SpeedStats::printCurrentStats() const
 {
     const double count = static_cast<double>(m_call_count);
@@ -80,14 +61,17 @@ void SpeedStats::printCurrentStats() const
     const double average_total_us = average_preprocess_us + average_inference_us + average_postprocess_us;
     const double average_fps = average_total_us > 0.0 ? 1'000'000.0 / average_total_us : 0.0;
 
-    detail::recordEndToEndResult({m_call_count,
-                                  average_preprocess_us,
-                                  average_inference_us,
-                                  average_postprocess_us,
-                                  average_total_us,
-                                  m_min_inference_us,
-                                  m_max_inference_us,
-                                  average_fps});
+    {
+        std::lock_guard<std::mutex> lock(detail::end_to_end_mutex);
+        detail::latest_end_to_end_result = {m_call_count,
+                                            average_preprocess_us,
+                                            average_inference_us,
+                                            average_postprocess_us,
+                                            average_total_us,
+                                            m_min_inference_us,
+                                            m_max_inference_us,
+                                            average_fps};
+    }
 
     std::cout << std::fixed << std::setprecision(2)
               << "次数:" << m_call_count
@@ -116,6 +100,7 @@ struct OfficialBenchmarkResult
     double throughput_fps = 0.0;
 };
 
+// 将浮点数格式化为保留两位小数的字符串。
 std::string fixedValue(double value)
 {
     std::ostringstream stream;
@@ -123,6 +108,7 @@ std::string fixedValue(double value)
     return stream.str();
 }
 
+// 向性能报告追加一行指标数据。
 void appendMetricRow(std::ostringstream &stream,
                      const std::string &scope,
                      const std::string &metric,
@@ -135,6 +121,7 @@ void appendMetricRow(std::ostringstream &stream,
            << " | " << unit << " |\n";
 }
 
+// 汇总端到端统计和 benchmark_app 结果并生成报告。
 std::string formatPerformanceReport(const std::string &model_path,
                                     const std::string &device,
                                     const std::string &infer_mode,
@@ -206,6 +193,7 @@ std::string formatPerformanceReport(const std::string &model_path,
     return stream.str();
 }
 
+// 获取与当前可执行文件同目录的性能日志路径。
 std::string resolveMptLogPath()
 {
     char exe_path[4096] = {0};
@@ -214,30 +202,15 @@ std::string resolveMptLogPath()
         return "network_mpt.log";
 
     exe_path[path_len] = '\0';
-    std::string exe_full_path(exe_path);
-    const std::size_t split_pos = exe_full_path.find_last_of('/');
-    if (split_pos == std::string::npos)
-        return "network_mpt.log";
-
-    return exe_full_path.substr(0, split_pos + 1) + "network_mpt.log";
+    return (std::filesystem::path(exe_path).parent_path() / "network_mpt.log").string();
 }
 
-std::mutex &mptLogMutex()
-{
-    static std::mutex mutex;
-    return mutex;
-}
-
-std::ofstream &mptLogStream()
-{
-    static std::ofstream stream(resolveMptLogPath(), std::ios::out | std::ios::app);
-    return stream;
-}
-
+// 将性能报告追加写入日志文件。
 void appendMptLog(const std::string &message)
 {
-    std::lock_guard<std::mutex> lock(mptLogMutex());
-    std::ofstream &stream = mptLogStream();
+    static std::mutex mutex;
+    static std::ofstream stream(resolveMptLogPath(), std::ios::out | std::ios::app);
+    std::lock_guard<std::mutex> lock(mutex);
     if (!stream.is_open())
         return;
 
@@ -247,9 +220,9 @@ void appendMptLog(const std::string &message)
     stream.flush();
 }
 
+// 将外部命令参数转换为安全的 shell 单引号字符串。
 std::string shellQuote(const std::string &value)
 {
-    // 所有外部参数均使用单引号转义，避免路径和设备字符串被 shell 拆分。
     std::string quoted = "'";
     for (char ch : value)
     {
@@ -262,6 +235,7 @@ std::string shellQuote(const std::string &value)
     return quoted;
 }
 
+// 删除字符串首尾的 ASCII 空白字符。
 std::string trimAscii(std::string value)
 {
     auto is_space = [](unsigned char ch)
@@ -275,6 +249,7 @@ std::string trimAscii(std::string value)
     return value;
 }
 
+// 提取指定标签与后缀之间的文本。
 bool extractTokenBetween(const std::string &text, const std::string &label, const std::string &suffix, std::string &token)
 {
     const std::size_t label_pos = text.find(label);
@@ -287,12 +262,10 @@ bool extractTokenBetween(const std::string &text, const std::string &label, cons
         return false;
 
     token = trimAscii(text.substr(value_begin, value_end - value_begin));
-    if (token.empty())
-        return false;
-
-    return true;
+    return !token.empty();
 }
 
+// 从 benchmark_app 输出中提取浮点指标。
 bool extractBenchmarkValue(const std::string &text, const std::string &label, const std::string &suffix, double &value)
 {
     std::string token;
@@ -301,11 +274,10 @@ bool extractBenchmarkValue(const std::string &text, const std::string &label, co
 
     char *end = nullptr;
     value = std::strtod(token.c_str(), &end);
-    if (end == token.c_str())
-        return false;
-    return true;
+    return end != token.c_str();
 }
 
+// 从 benchmark_app 输出中提取整数指标。
 bool extractBenchmarkValue(const std::string &text, const std::string &label, const std::string &suffix, int &value)
 {
     std::string token;
@@ -314,19 +286,23 @@ bool extractBenchmarkValue(const std::string &text, const std::string &label, co
 
     char *end = nullptr;
     value = static_cast<int>(std::strtol(token.c_str(), &end, 10));
-    if (end == token.c_str())
-        return false;
-    return true;
+    return end != token.c_str();
 }
 
 } // namespace detail
 
+// 运行 benchmark_app，解析结果并输出统一的性能报告。
 void runOfficialBenchmark(const std::string &model_path,
                           const std::string &device,
                           const std::string &infer_mode,
                           const OfficialBenchmarkConfig &config)
 {
-    const detail::EndToEndResult end_to_end = detail::takeEndToEndResult();
+    detail::EndToEndResult end_to_end;
+    {
+        std::lock_guard<std::mutex> lock(detail::end_to_end_mutex);
+        end_to_end = detail::latest_end_to_end_result;
+        detail::latest_end_to_end_result = {};
+    }
     const auto emit_report = [&](const detail::OfficialBenchmarkResult *benchmark,
                                  const std::string &benchmark_error)
     {

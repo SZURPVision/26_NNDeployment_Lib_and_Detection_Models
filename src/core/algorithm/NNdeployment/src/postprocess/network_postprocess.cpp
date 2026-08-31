@@ -17,17 +17,22 @@
 // ==================== 部署流程辅助区域 ====================
 namespace
 {
+// 将每个候选项封装，便于直接进行张量计算
 struct CandidateView
 {
     const float *data = nullptr;
+    std::size_t candidate_index = 0;
+    std::size_t candidate_stride = 0;
     std::size_t feature_stride = 0;
 
+    // 按特征索引读取当前候选项的数据。
     float operator[](std::size_t feature_index) const noexcept
     {
-        return data[feature_index * feature_stride];
+        return data[candidate_index * candidate_stride + feature_index * feature_stride];
     }
 };
 
+// 计算装甲板四个关键点的最小外接矩形。
 cv::Rect2d getArmorBoundingRect(const NetArmorResult &result)
 {
     double min_x = result.points[0].x;
@@ -44,7 +49,7 @@ cv::Rect2d getArmorBoundingRect(const NetArmorResult &result)
     return cv::Rect2d(min_x, min_y, max_x - min_x, max_y - min_y);
 }
 
-// 获取两个ArmorResult的IOU
+// 计算两个装甲板外接矩形的交并比。
 double getArmorIoU(const NetArmorResult &lhs, const NetArmorResult &rhs)
 {
     const cv::Rect2d lhs_rect = getArmorBoundingRect(lhs);
@@ -65,7 +70,7 @@ double getArmorIoU(const NetArmorResult &lhs, const NetArmorResult &rhs)
 
 // 装甲板后处理流程
 
-// 构建历史记录用于shouldAppendArmorResult函数
+// 构造白色装甲板判定使用的初始历史队列。
 std::queue<std::vector<NetArmorResult>> buildInitialArmorHistory()
 {
     std::queue<std::vector<NetArmorResult>> last_results;
@@ -80,7 +85,8 @@ std::queue<std::vector<NetArmorResult>> buildInitialArmorHistory()
 // 根据颜色和历史结果判断当前白色装甲板结果是否应保留。
 bool shouldAppendArmorResult(const NetArmorResult &result, const int my_color, std::queue<std::vector<NetArmorResult>> last_results)
 {
-    if (result.color_id != 2)
+    // 仅白色装甲板额外判断。my_color == 2 表示测试模式，全部识别
+    if ((result.color_id != 2) || (my_color ==2))
         return true;
 
     while (!last_results.empty())
@@ -88,10 +94,11 @@ bool shouldAppendArmorResult(const NetArmorResult &result, const int my_color, s
         const std::vector<NetArmorResult> &history_results = last_results.front();
         for (const NetArmorResult &history_result : history_results)
         {
+            // 历史装甲板为待识别颜色，类别相同且 IOU 通过，可提供自瞄识别
             if (((my_color == 0 && history_result.color_id == 0) ||
                  (my_color == 1 && history_result.color_id == 1)) &&
                 history_result.armor_id == result.armor_id &&
-                getArmorIoU(history_result, result) > 0.3)
+                getArmorIoU(history_result, result) > 0.3) 
                 return true;
         }
         last_results.pop();
@@ -100,14 +107,16 @@ bool shouldAppendArmorResult(const NetArmorResult &result, const int my_color, s
     return false;
 }
 
-YOLOModel::Postprocessor::Postprocessor(const ModelConfig &modelconfig, float nms_threshold)
-    : m_model_config(modelconfig), m_nms_threshold(nms_threshold) {}
+// 保存后处理所需的模型配置和非极大值抑制阈值。
+YOLOModel::PostProcessor::PostProcessor(const ModelConfig &model_config, float nms_threshold)
+    : m_model_config(model_config), m_nms_threshold(nms_threshold) {}
 
 // ==================== v5步兵实现 ====================
-V5InfantryPostProcessor::V5InfantryPostProcessor(const YOLOModel::ModelConfig &modelconfig, float nms_threshold)
-    : Postprocessor(modelconfig, nms_threshold), m_last_results(buildInitialArmorHistory()) {}
+// 初始化 V5 步兵后处理器及装甲板历史队列。
+V5InfantryPostProcessor::V5InfantryPostProcessor(const YOLOModel::ModelConfig &model_config, float nms_threshold)
+    : PostProcessor(model_config, nms_threshold), m_last_results(buildInitialArmorHistory()) {}
 
-
+// 解析 V5 步兵模型输出并生成装甲板检测结果。
 std::vector<NetArmorResult> V5InfantryPostProcessor::postProcessArmorMat(const float *input_ptr, const InferParam &infer_param, const int &my_color)
 {
     const float confidence_threshold = m_model_config.confidence_threshold;
@@ -135,10 +144,9 @@ std::vector<NetArmorResult> V5InfantryPostProcessor::postProcessArmorMat(const f
     // V5 输出为 25200*22，每行是一组候选结果。
     for (int candidate_index = 0; candidate_index < infer_param.out_tensor_rows; ++candidate_index)
     {
-        const CandidateView candidate{
-            input_ptr + static_cast<std::size_t>(candidate_index) *
-                            static_cast<std::size_t>(infer_param.out_tensor_cols),
-            1};
+        // 封装候选项，便于后续直接当作张量计算
+        const CandidateView candidate{input_ptr, static_cast<std::size_t>(candidate_index),
+                                      static_cast<std::size_t>(infer_param.out_tensor_cols), 1};
 
         const double raw_confidence = candidate[8]; // 第8列为未归一化的总体置信度
         if (raw_confidence < raw_confidence_threshold)
@@ -157,6 +165,7 @@ std::vector<NetArmorResult> V5InfantryPostProcessor::postProcessArmorMat(const f
             }
         }
 
+        // sigmoid 还原 0-1 区间置信度
         const double confidence = raw_confidence >= 0.0
                                       ? 1.0 / (1.0 + std::exp(-raw_confidence))
                                       : std::exp(raw_confidence) / (1.0 + std::exp(raw_confidence));
@@ -211,12 +220,10 @@ std::vector<NetArmorResult> V5InfantryPostProcessor::postProcessArmorMat(const f
         boxes_temp.emplace_back(cv::boundingRect(current_keypoints));
     }
 
-    // === Step 4: 非极大值抑制（NMS）===
-    // 使用OpenCV的NMS算法去除重叠度高的冗余检测框，保留最优结果
+    // 对候选框执行非极大值抑制。
     cv::dnn::NMSBoxes(boxes_temp, confidences_temp, score_threshold, nms_threshold, indices_temp);
 
-    // === Step 5: 组织最终结果并更新状态 ===
-    // 遍历NMS筛选后的索引，构建最终结果
+    // 组装非极大值抑制保留的装甲板结果。
     for (const int &index : indices_temp)
     {
         // 准备结果
@@ -239,10 +246,6 @@ std::vector<NetArmorResult> V5InfantryPostProcessor::postProcessArmorMat(const f
         if (throw_flag)
             continue; // 坐标无效，跳过此检测框
 
-        // result.left_top = _keypoints[4 * idx + 0];
-        // result.right_top = _keypoints[4 * idx + 1];
-        // result.right_bottom = _keypoints[4 * idx + 2];
-        // result.left_bottom = _keypoints[4 * idx + 3];
         result.points = {
             cv::Point2d(keypoints_temp[index * 4 + 0].x, keypoints_temp[index * 4 + 0].y),
             cv::Point2d(keypoints_temp[index * 4 + 1].x, keypoints_temp[index * 4 + 1].y),
@@ -257,28 +260,31 @@ std::vector<NetArmorResult> V5InfantryPostProcessor::postProcessArmorMat(const f
         result.class_name = m_armor_names[result.armor_id];
         result.color_name = m_color_names[result.color_id];
 
+        // 对白色装甲板进行的额外判断（非红蓝击打变化为白色时不输出）
         if (!shouldAppendArmorResult(result, my_color, m_last_results))
             continue;
 
         // 相当于push_back，但是更省空间，不用拷贝
         results.emplace_back(std::move(result));
-        // lastPoints.emplace_back(Armors[idx].points); // 保存当前帧关键点用于下一帧匹配
     }
 
+    // 更新白色装甲板判定使用的历史结果。
     m_last_results.pop();
     m_last_results.push(results);
     return results;
-
 }
 
 // ==================== v8步兵实现 ====================
-V8InfantryPostProcessor::V8InfantryPostProcessor(const YOLOModel::ModelConfig &modelconfig, float nms_threshold)
-    : Postprocessor(modelconfig, nms_threshold), m_last_results(buildInitialArmorHistory()) {}
+// 初始化 V8 步兵后处理器及装甲板历史队列。
+V8InfantryPostProcessor::V8InfantryPostProcessor(const YOLOModel::ModelConfig &model_config, float nms_threshold)
+    : PostProcessor(model_config, nms_threshold), m_last_results(buildInitialArmorHistory()) {}
 
 // ==================== v8 21维步兵实现 ====================
-V8_21InfantryPostProcessor::V8_21InfantryPostProcessor(const YOLOModel::ModelConfig &modelconfig, float nms_threshold)
-    : Postprocessor(modelconfig, nms_threshold), m_last_results(buildInitialArmorHistory()) {}
+// 初始化 V8 21维步兵后处理器及装甲板历史队列。
+V8_21InfantryPostProcessor::V8_21InfantryPostProcessor(const YOLOModel::ModelConfig &model_config, float nms_threshold)
+    : PostProcessor(model_config, nms_threshold), m_last_results(buildInitialArmorHistory()) {}
 
+// 解析 V8 21维步兵模型输出并生成装甲板检测结果。
 std::vector<NetArmorResult> V8_21InfantryPostProcessor::postProcessArmorMat(const float *input_ptr, const InferParam &infer_param, const int &my_color)
 {
     const float confidence_threshold = m_model_config.confidence_threshold;
@@ -304,9 +310,9 @@ std::vector<NetArmorResult> V8_21InfantryPostProcessor::postProcessArmorMat(cons
     // V8 21维输出为 21*6300，每列是一组候选结果。
     for (int candidate_index = 0; candidate_index < infer_param.out_tensor_cols; ++candidate_index)
     {
-        const CandidateView candidate{
-            input_ptr + candidate_index,
-            static_cast<std::size_t>(infer_param.out_tensor_cols)};
+        // 封装候选项，便于后续直接当作张量计算
+        const CandidateView candidate{input_ptr, static_cast<std::size_t>(candidate_index), 1,
+                                      static_cast<std::size_t>(infer_param.out_tensor_cols)};
 
         // 类别分支得分：[4,12]分别对应9个类别
         int class_id = 0;
@@ -338,6 +344,7 @@ std::vector<NetArmorResult> V8_21InfantryPostProcessor::postProcessArmorMat(cons
             }
         }
 
+        // 过滤异常颜色和己方颜色。
         if (color_id == 3)
             continue;
         if (color_id == 0 && my_color == 1)
@@ -345,6 +352,7 @@ std::vector<NetArmorResult> V8_21InfantryPostProcessor::postProcessArmorMat(cons
         if (color_id == 1 && my_color == 0)
             continue;
 
+        // 解码装甲板关键点并还原到原图尺度。
         std::vector<cv::Point2f> current_keypoints(4);
         for (int point_index = 0; point_index < 4; ++point_index)
         {
@@ -357,6 +365,7 @@ std::vector<NetArmorResult> V8_21InfantryPostProcessor::postProcessArmorMat(cons
             current_keypoints[point_index] = cv::Point2f(kpt_x, kpt_y);
         }
 
+        // 根据类别确定装甲板尺寸。
         if (class_id == 1 || class_id == 7)
             sizes_temp.emplace_back(1);
         else
@@ -365,14 +374,17 @@ std::vector<NetArmorResult> V8_21InfantryPostProcessor::postProcessArmorMat(cons
         for (const cv::Point2f &point : current_keypoints)
             keypoints_temp.emplace_back(point.x, point.y);
 
+        // 保存候选结果的各个分量。
         confidences_temp.emplace_back(static_cast<float>(confidence));
         colors_temp.emplace_back(color_id);
         class_ids_temp.emplace_back(class_id);
         boxes_temp.emplace_back(cv::boundingRect(current_keypoints));
     }
 
+    // 对候选框执行非极大值抑制。
     cv::dnn::NMSBoxes(boxes_temp, confidences_temp, score_threshold, nms_threshold, indices_temp);
 
+    // 组装非极大值抑制保留的装甲板结果。
     for (const int &index : indices_temp)
     {
         NetArmorResult result;
@@ -411,12 +423,14 @@ std::vector<NetArmorResult> V8_21InfantryPostProcessor::postProcessArmorMat(cons
         results.emplace_back(std::move(result));
     }
 
+    // 更新白色装甲板判定使用的历史结果。
     m_last_results.pop();
     m_last_results.push(results);
     return results;
 }
 
 // ==================== v8步兵实现 ====================
+// 解析 V8 步兵模型输出并生成装甲板检测结果。
 std::vector<NetArmorResult> V8InfantryPostProcessor::postProcessArmorMat(const float *input_ptr, const InferParam &infer_param, const int &my_color)
 {
     const float confidence_threshold = m_model_config.confidence_threshold;
@@ -440,9 +454,9 @@ std::vector<NetArmorResult> V8InfantryPostProcessor::postProcessArmorMat(const f
     // V8 25维输出为 25*6300，每列是一组候选结果。
     for (int candidate_index = 0; candidate_index < infer_param.out_tensor_cols; ++candidate_index)
     {
-        const CandidateView candidate{
-            input_ptr + candidate_index,
-            static_cast<std::size_t>(infer_param.out_tensor_cols)};
+        // 封装候选项，便于后续直接当作张量计算
+        const CandidateView candidate{input_ptr, static_cast<std::size_t>(candidate_index), 1,
+                                      static_cast<std::size_t>(infer_param.out_tensor_cols)};
 
         // 类别分支得分：[4,12]分别对应9个类别
         int class_id = 0;
@@ -510,11 +524,10 @@ std::vector<NetArmorResult> V8InfantryPostProcessor::postProcessArmorMat(const f
         boxes_temp.emplace_back(cv::boundingRect(current_keypoints));
     }
 
-    // === Step 4: 非极大值抑制（NMS）===
+    // 对候选框执行非极大值抑制。
     cv::dnn::NMSBoxes(boxes_temp, confidences_temp, score_threshold, nms_threshold, indices_temp);
 
-    // === Step 5: 组织最终结果并更新状态 ===
-    // 遍历NMS筛选后的索引，构建最终结果
+    // 组装非极大值抑制保留的装甲板结果。
     for (const int &index : indices_temp)
     {
         // 准备结果
@@ -556,22 +569,23 @@ std::vector<NetArmorResult> V8InfantryPostProcessor::postProcessArmorMat(const f
 
         // 相当于push_back，但是更省空间，不用拷贝
         results.emplace_back(std::move(result));
-        // lastPoints.emplace_back(Armors[idx].points); // 保存当前帧关键点用于下一帧匹配
     }
 
+    // 更新白色装甲板判定使用的历史结果。
     m_last_results.pop();
     m_last_results.push(results);
     return results;
-
 }
 
 // ==================== 雷达实现 ====================
-LidarPostProcessor::LidarPostProcessor(const YOLOModel::ModelConfig &modelconfig, float nms_threshold)
-    : Postprocessor(modelconfig, nms_threshold) {}
+// 初始化雷达后处理器。
+LidarPostProcessor::LidarPostProcessor(const YOLOModel::ModelConfig &model_config, float nms_threshold)
+    : PostProcessor(model_config, nms_threshold) {}
 
+// 解析雷达模型输出并生成装甲板检测结果。
 std::vector<NetArmorResult> LidarPostProcessor::postProcessArmorMat(const float *input_ptr, const InferParam &infer_param, const int &my_color)
 {
-    (void)my_color;
+    static_cast<void>(my_color);
     const float confidence_threshold = m_model_config.confidence_threshold;
     const float nms_threshold = m_nms_threshold;
 
@@ -589,9 +603,9 @@ std::vector<NetArmorResult> LidarPostProcessor::postProcessArmorMat(const float 
     // 雷达网络输出形状为 26*2100，每列是一个预测结果
     for (int current_anchor_box = 0; current_anchor_box < infer_param.out_tensor_cols; current_anchor_box++)
     {
-        const CandidateView candidate{
-            input_ptr + current_anchor_box,
-            static_cast<std::size_t>(infer_param.out_tensor_cols)};
+        // 封装候选项，便于后续直接当作张量计算
+        const CandidateView candidate{input_ptr, static_cast<std::size_t>(current_anchor_box), 1,
+                                      static_cast<std::size_t>(infer_param.out_tensor_cols)};
 
         // 置信度最高的类别的索引和置信度
         int best_class_idx = 0;
@@ -636,7 +650,6 @@ std::vector<NetArmorResult> LidarPostProcessor::postProcessArmorMat(const float 
             float kpt_x_temp = candidate[14 + kpt_num * 3 + 0]; // x
             float kpt_y_temp = candidate[14 + kpt_num * 3 + 1]; // y
 
-            // 还原到原图尺度
             // 还原到原图尺度
             float kpt_x = (kpt_x_temp - infer_param.pad_x) / infer_param.scale;
             float kpt_y = (kpt_y_temp - infer_param.pad_y) / infer_param.scale;
@@ -703,14 +716,15 @@ std::vector<NetArmorResult> LidarPostProcessor::postProcessArmorMat(const float 
 }
 
 // ==================== 符实现 ====================
-RunePostProcessor::RunePostProcessor(const YOLOModel::ModelConfig &modelconfig, float nms_threshold)
-    : Postprocessor(modelconfig, nms_threshold) {}
+// 初始化神符后处理器。
+RunePostProcessor::RunePostProcessor(const YOLOModel::ModelConfig &model_config, float nms_threshold)
+    : PostProcessor(model_config, nms_threshold) {}
 
 namespace
 {
-// 专门为符写的NMS，取符叶4个点（不包括R标）的中心之间的距离作为度量
+// 按符叶四个边缘点的中心距离执行非极大值抑制。
 void centerDistanceNMS(
-    const std::vector<cv::Point2d> &keypoints_list, // 每个关键点: (x, y, conf)
+    const std::vector<cv::Point2d> &keypoints_list, // 每个关键点: (x, y)
     const std::vector<float> &confidences_list,
     const std::vector<int> &class_ids_list,
     float center_dist_threshold,
@@ -734,7 +748,7 @@ void centerDistanceNMS(
         return;
     }
 
-    // 1. 计算每个检测的中心点（使用前4个角点的平均值）
+    // 1. 计算每个检测的中心点（使用符叶4个角点的平均值）
     std::vector<cv::Point2f> centers;
     centers.reserve(num_detections);
 
@@ -825,7 +839,7 @@ void centerDistanceNMS(
 }
 } // namespace
 
-
+// 解析神符模型输出并生成符叶检测结果。
 std::vector<NetRuneResult> RunePostProcessor::postProcessRuneMat(const float *input_ptr, const InferParam &infer_param)
 {
     const float confidence_threshold = m_model_config.confidence_threshold;
@@ -846,10 +860,11 @@ std::vector<NetRuneResult> RunePostProcessor::postProcessRuneMat(const float *in
     // 打符网络形状是 18*6300，每列是一个预测结果
     for (int candidate_index = 0; candidate_index < infer_param.out_tensor_cols; ++candidate_index)
     {
-        const CandidateView candidate{
-            input_ptr + candidate_index,
-            static_cast<std::size_t>(infer_param.out_tensor_cols)};
+        // 封装候选项，便于后续直接当作张量计算
+        const CandidateView candidate{input_ptr, static_cast<std::size_t>(candidate_index), 1,
+                                      static_cast<std::size_t>(infer_param.out_tensor_cols)};
 
+        // 选择置信度最高的符叶类别。
         int class_id = 0;
         float best_class_score = candidate[0];
         for (int class_index = 1; class_index < 3; ++class_index)
@@ -865,6 +880,7 @@ std::vector<NetRuneResult> RunePostProcessor::postProcessRuneMat(const float *in
         if (best_class_score < confidence_threshold)
             continue;
 
+        // 统计达到置信度要求的关键点数量。
         int valid_keypoint_count = 0;
         for (int point_index = 0; point_index < 5; ++point_index)
         {
@@ -876,6 +892,7 @@ std::vector<NetRuneResult> RunePostProcessor::postProcessRuneMat(const float *in
         if (valid_keypoint_count < 3)
             continue;
 
+        // 解码符叶关键点并还原到原图尺度。
         std::vector<cv::Point2d> current_keypoints(5);
         for (int point_index = 0; point_index < 5; ++point_index)
         {
@@ -891,6 +908,7 @@ std::vector<NetRuneResult> RunePostProcessor::postProcessRuneMat(const float *in
         for (const cv::Point2d &point : current_keypoints)
             keypoints_temp.emplace_back(point);
 
+        // 保存候选结果的各个分量。
         confidences_temp.emplace_back(best_class_score);
         class_ids_temp.emplace_back(class_id);
     }

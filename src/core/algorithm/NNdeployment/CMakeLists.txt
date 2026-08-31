@@ -2,16 +2,16 @@ cmake_minimum_required(VERSION 3.22.0)
 set(lib_name NNdeployment)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-option(NETLIB_ENABLE_TENSORRT "Build TensorRT backend support" OFF)
+option(NNDEPLOYMENT_ENABLE_TENSORRT "Build TensorRT backend support" OFF)
 
 find_package(OpenCV REQUIRED)
 
 
-set(NETLIB_WITH_OPENVINO ON)
-set(NETLIB_WITH_TENSORRT OFF)
-if(NETLIB_ENABLE_TENSORRT)
-    set(NETLIB_WITH_OPENVINO OFF)
-    set(NETLIB_WITH_TENSORRT ON)
+set(NNDEPLOYMENT_WITH_OPENVINO ON)
+set(NNDEPLOYMENT_WITH_TENSORRT OFF)
+if(NNDEPLOYMENT_ENABLE_TENSORRT)
+    set(NNDEPLOYMENT_WITH_OPENVINO OFF)
+    set(NNDEPLOYMENT_WITH_TENSORRT ON)
     find_package(CUDAToolkit REQUIRED)
     # TensorRT 没有稳定的官方 CMake package，这里手动查找头文件和库
     find_path(TENSORRT_INCLUDE_DIR NvInfer.h
@@ -39,7 +39,7 @@ set(NNdeployment_src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/postprocess/network_postprocess.cpp
 )
 
-if(NETLIB_WITH_TENSORRT)
+if(NNDEPLOYMENT_WITH_TENSORRT)
     list(APPEND NNdeployment_src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/inference/network_deployment_tensorrt.cpp
     )
@@ -78,13 +78,13 @@ target_link_libraries(${lib_name}_lib PUBLIC
 )
 target_link_libraries(${lib_name}_lib PRIVATE ${lib_name}_mpt_lib)
 
-if(NETLIB_WITH_OPENVINO)
+if(NNDEPLOYMENT_WITH_OPENVINO)
     target_link_libraries(${lib_name}_lib PRIVATE
         openvino::runtime
     )
 endif()
 
-if(NETLIB_WITH_TENSORRT)
+if(NNDEPLOYMENT_WITH_TENSORRT)
     target_include_directories(${lib_name}_lib PRIVATE
         ${CUDAToolkit_INCLUDE_DIRS}
         ${TENSORRT_INCLUDE_DIR}
@@ -93,13 +93,13 @@ if(NETLIB_WITH_TENSORRT)
         ${TENSORRT_LIBRARY}
         CUDA::cudart
     )
-    target_compile_definitions(${lib_name}_lib PRIVATE NETLIB_WITH_TENSORRT=1)
+    target_compile_definitions(${lib_name}_lib PRIVATE NNDEPLOYMENT_WITH_TENSORRT=1)
 else()
-    target_compile_definitions(${lib_name}_lib PRIVATE NETLIB_WITH_TENSORRT=0)
+    target_compile_definitions(${lib_name}_lib PRIVATE NNDEPLOYMENT_WITH_TENSORRT=0)
 endif()
 
-if(NETLIB_WITH_OPENVINO)
-    target_compile_definitions(${lib_name}_lib PRIVATE NETLIB_WITH_OPENVINO=1)
+if(NNDEPLOYMENT_WITH_OPENVINO)
+    target_compile_definitions(${lib_name}_lib PRIVATE NNDEPLOYMENT_WITH_OPENVINO=1)
 else()
-    target_compile_definitions(${lib_name}_lib PRIVATE NETLIB_WITH_OPENVINO=0)
+    target_compile_definitions(${lib_name}_lib PRIVATE NNDEPLOYMENT_WITH_OPENVINO=0)
 endif()

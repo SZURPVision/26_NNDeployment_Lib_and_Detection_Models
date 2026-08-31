@@ -1,11 +1,12 @@
 #include "network_deployment_tensorrt.hpp"
 
-#if NETLIB_WITH_TENSORRT
+#if NNDEPLOYMENT_WITH_TENSORRT
 
 #include <cmath>
 #include <cstring>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <opencv2/dnn.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -66,16 +67,13 @@ void printTensorInfo(const nvinfer1::ICudaEngine *engine)
 }
 } // namespace
 
-TensorRTEngine::TensorRTEngine(const YOLOModel::ModelConfig &modelconfig, const DebugConfig &debugconfig) : InferenceEngine(modelconfig, debugconfig)
+TensorRTEngine::TensorRTEngine(const YOLOModel::ModelConfig &model_config, const DebugConfig &debug_config) : InferenceEngine(model_config, debug_config)
 {
     // ==================== 初始化推理引擎 ====================
     // 读取引擎文件
     std::ifstream engine_file(m_model_config.model_path, std::ios::binary);
     if (!engine_file)
-    {
-        std::cerr << "找不到模型，请检查模型地址是否正确" << std::endl;
-        return;
-    }
+        throw std::runtime_error("找不到 TensorRT 模型: " + m_model_config.model_path);
 
     // 获取文件大小
     engine_file.seekg(0, std::ios::end);
@@ -85,26 +83,24 @@ TensorRTEngine::TensorRTEngine(const YOLOModel::ModelConfig &modelconfig, const 
     // 以二进制文件形式加载模型内容
     std::vector<char> engine_data(file_size);
     if (!engine_file.read(engine_data.data(), file_size))
-    {
-        std::cerr << "加载模型内容时出错" << std::endl;
-        return;
-    }
+        throw std::runtime_error("读取 TensorRT 模型失败: " + m_model_config.model_path);
 
     engine_file.close();
 
     // 创建TensorRT运行时对象
-    this->m_runtime.reset(nvinfer1::createInferRuntime(this->m_logger));
+    m_runtime.reset(nvinfer1::createInferRuntime(m_logger));
+    if (!m_runtime)
+        throw std::runtime_error("无法创建 TensorRT 运行时");
 
     // 反序列化引擎数据,生成推理引擎
-    this->m_engine.reset(this->m_runtime->deserializeCudaEngine(engine_data.data(), file_size));
-    if (!this->m_engine)
-    {
-        std::cerr << "无法创建模型推理引擎" << std::endl;
-        return;
-    }
+    m_engine.reset(m_runtime->deserializeCudaEngine(engine_data.data(), file_size));
+    if (!m_engine)
+        throw std::runtime_error("无法反序列化 TensorRT 模型: " + m_model_config.model_path);
 
     // 创建执行上下文
-    this->m_context.reset(this->m_engine->createExecutionContext());
+    m_context.reset(m_engine->createExecutionContext());
+    if (!m_context)
+        throw std::runtime_error("无法创建 TensorRT 执行上下文");
 
     // 写入输入输出张量大小
     m_target_width = m_engine->getTensorShape(m_engine->getIOTensorName(m_input_index)).d[3];
@@ -132,16 +128,16 @@ TensorRTEngine::TensorRTEngine(const YOLOModel::ModelConfig &modelconfig, const 
     m_context->setInputShape("images", inputDims);
 
     // 分配GPU显存用于输入输出
-    cudaMalloc((void **)&m_buffers[m_input_index], this->m_input_volume);
-    cudaMalloc((void **)&m_buffers[m_output_index], this->m_output_volume);
+    cudaMalloc(&m_buffers[m_input_index], m_input_volume);
+    cudaMalloc(&m_buffers[m_output_index], m_output_volume);
 
     // 绑定显存地址到TensorRT上下文
     m_context->setTensorAddress("images", m_buffers[m_input_index]);
     m_context->setTensorAddress("output0", m_buffers[m_output_index]);
 
     // 分配页锁定内存用于存储输入输出数据（提高传输效率）
-    cudaMallocHost(reinterpret_cast<void **>(&this->m_rst), this->m_output_volume);
-    cudaMallocHost(&(this->m_blob_pinned), this->m_input_volume);
+    cudaMallocHost(reinterpret_cast<void **>(&m_rst), m_output_volume);
+    cudaMallocHost(&m_blob_pinned, m_input_volume);
 
     // 创建CUDA流用于异步操作
     cudaStreamCreate(&m_cuda_stream);
@@ -162,54 +158,54 @@ int TensorRTEngine::inputHeight() const
 
 const float *TensorRTEngine::syncInfer(const cv::Mat &pre_processed_image)
 {
-    cv::dnn::blobFromImage(pre_processed_image, this->m_blob, 1 / 255.0,
+    cv::dnn::blobFromImage(pre_processed_image, m_blob, 1 / 255.0,
                            cv::Size(m_target_width, m_target_height),
                            cv::Scalar(0, 0, 0), true, false, CV_32F);
 
-    memcpy(this->m_blob_pinned, this->m_blob.data, m_blob.total() * m_blob.elemSize());
+    memcpy(m_blob_pinned, m_blob.data, m_blob.total() * m_blob.elemSize());
 
-    cudaMemcpyAsync(m_buffers[m_input_index], this->m_blob_pinned,
-                    this->m_input_volume, cudaMemcpyHostToDevice, this->m_cuda_stream);
+    cudaMemcpyAsync(m_buffers[m_input_index], m_blob_pinned,
+                    m_input_volume, cudaMemcpyHostToDevice, m_cuda_stream);
 
-    m_context->enqueueV3(this->m_cuda_stream);
+    m_context->enqueueV3(m_cuda_stream);
 
-    cudaMemcpyAsync((this->m_rst), m_buffers[m_output_index],
-                    this->m_output_volume, cudaMemcpyDeviceToHost, this->m_cuda_stream);
+    cudaMemcpyAsync(m_rst, m_buffers[m_output_index],
+                    m_output_volume, cudaMemcpyDeviceToHost, m_cuda_stream);
 
-    cudaStreamSynchronize(this->m_cuda_stream);
+    cudaStreamSynchronize(m_cuda_stream);
 
     return m_rst;
 }
 
 const float *TensorRTEngine::asyncInfer(const cv::Mat &pre_processed_image)
 {
-    cv::dnn::blobFromImage(pre_processed_image, this->m_blob, 1 / 255.0,
+    cv::dnn::blobFromImage(pre_processed_image, m_blob, 1 / 255.0,
                            cv::Size(m_target_width, m_target_height),
                            cv::Scalar(0, 0, 0), true, false, CV_32F);
 
-    memcpy(this->m_blob_pinned, this->m_blob.data, m_blob.total() * m_blob.elemSize());
+    memcpy(m_blob_pinned, m_blob.data, m_blob.total() * m_blob.elemSize());
 
-    cudaMemcpyAsync(m_buffers[m_input_index], this->m_blob_pinned,
-                    this->m_input_volume, cudaMemcpyHostToDevice, this->m_cuda_stream);
+    cudaMemcpyAsync(m_buffers[m_input_index], m_blob_pinned,
+                    m_input_volume, cudaMemcpyHostToDevice, m_cuda_stream);
 
-    m_context->enqueueV3(this->m_cuda_stream);
+    m_context->enqueueV3(m_cuda_stream);
 
-    cudaMemcpyAsync((this->m_rst), m_buffers[m_output_index],
-                    this->m_output_volume, cudaMemcpyDeviceToHost, this->m_cuda_stream);
+    cudaMemcpyAsync(m_rst, m_buffers[m_output_index],
+                    m_output_volume, cudaMemcpyDeviceToHost, m_cuda_stream);
 
-    cudaStreamSynchronize(this->m_cuda_stream);
+    cudaStreamSynchronize(m_cuda_stream);
 
     return m_rst;
 }
 
 TensorRTEngine::~TensorRTEngine()
 {
-    if (this->m_cuda_stream)
-        cudaStreamDestroy(this->m_cuda_stream);
-    if (this->m_blob_pinned)
-        cudaFreeHost(this->m_blob_pinned);
-    if (this->m_rst)
-        cudaFreeHost(this->m_rst);
+    if (m_cuda_stream)
+        cudaStreamDestroy(m_cuda_stream);
+    if (m_blob_pinned)
+        cudaFreeHost(m_blob_pinned);
+    if (m_rst)
+        cudaFreeHost(m_rst);
     if (m_buffers[m_input_index])
         cudaFree(m_buffers[m_input_index]);
     if (m_buffers[m_output_index])

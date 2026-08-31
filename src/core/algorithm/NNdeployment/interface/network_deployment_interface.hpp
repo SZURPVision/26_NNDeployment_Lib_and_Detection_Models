@@ -27,7 +27,7 @@ struct NetArmorResult
 {
     std::vector<cv::Point2d> points; // 左上、左下、右下、右上。
     int armor_id = -1;
-    int color_id = -1;               // 0=蓝色，1=红色。注意mycolor=1表示我方为蓝色，=0为红色
+    int color_id = -1;               // 0=蓝色，1=红色，2=白色。my_color=1表示我方为蓝色，=0表示我方为红色。
     int size = 0;                    // 0=小装甲板，1=大装甲板。
     double score = 0.;
     std::string class_name;
@@ -64,14 +64,14 @@ public:
     // 直接指定模型路径、推理模式和部署后端，剩余参数使用默认值。
     ArmorModel(const std::string &model_path,
                const std::string &infer_mode,
-               const std::string &deployment_way,
+               const std::string &deploy_way,
                const std::string &device = "GPU",
                float confidence_threshold = 0.5f,
-               const std::string &postprocessmode = "auto_detect",
-               const DebugConfig &debugconfig = DebugConfig());
+               const std::string &postprocess_mode = "auto_detect",
+               const DebugConfig &debug_config = DebugConfig());
     // 从 JSON 的指定节点读取模型配置。
     explicit ArmorModel(const JsonConfig &json_config,
-                        const DebugConfig &debugconfig = DebugConfig());
+                        const DebugConfig &debug_config = DebugConfig());
     ~ArmorModel() noexcept;
 
     // 禁止复制构造和赋值，允许移动构造和移动赋值。
@@ -80,7 +80,8 @@ public:
     ArmorModel(ArmorModel &&) noexcept;
     ArmorModel &operator=(ArmorModel &&) noexcept;
 
-    // 执行装甲板推理；无有效结果或模型任务不匹配时返回空 vector。
+    // 执行装甲板推理；my_color=1 表示我方蓝色，=0 表示我方红色，=2 表示离线演示时保留蓝红双方结果。
+    // 无有效结果时返回空 vector；模型任务不匹配会在构造时抛出异常。
     std::vector<NetArmorResult> netProcess(const cv::Mat &input_image, const int &my_color);
 
 private:
@@ -97,14 +98,14 @@ public:
     // 直接指定模型路径、推理模式和部署后端，剩余参数使用默认值。
     RuneModel(const std::string &model_path,
               const std::string &infer_mode,
-              const std::string &deployment_way,
+              const std::string &deploy_way,
               const std::string &device = "GPU",
               float confidence_threshold = 0.5f,
-              const std::string &postprocessmode = "auto_detect",
-              const DebugConfig &debugconfig = DebugConfig());
+              const std::string &postprocess_mode = "auto_detect",
+              const DebugConfig &debug_config = DebugConfig());
     // 从 JSON 的指定节点读取模型配置。
     explicit RuneModel(const JsonConfig &json_config,
-                       const DebugConfig &debugconfig = DebugConfig());
+                       const DebugConfig &debug_config = DebugConfig());
     ~RuneModel() noexcept;
 
     // 禁止复制构造和赋值，允许移动构造和移动赋值。
@@ -113,7 +114,7 @@ public:
     RuneModel(RuneModel &&) noexcept;
     RuneModel &operator=(RuneModel &&) noexcept;
 
-    // 执行神符推理；无有效结果或模型任务不匹配时返回空 vector。
+    // 执行神符推理；无有效结果时返回空 vector，模型任务不匹配会在构造时抛出异常。
     std::vector<NetRuneResult> netProcess(const cv::Mat &input_image);
 
 private:

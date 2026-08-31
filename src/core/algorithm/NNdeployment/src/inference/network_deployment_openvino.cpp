@@ -41,18 +41,11 @@ std::string toString(YOLOModel::NetPostProcessMode way)
     }
 }
 
-void printTensorInfo(const ov::Tensor &tensor, const std::string &name = "Tensor")
-{
-    std::cout << name << " 张量信息:" << "\n";
-    std::cout << "  形状: " << tensor.get_shape() << "\n";
-    std::cout << "  类别: " << tensor.get_element_type() << "\n";
-    std::cout << "  元素量: " << tensor.get_size() << " elements" << std::endl;
-}
 } // namespace
 
 // ==================== OpenVINO实现 ====================
 
-OpenVINOEngine::OpenVINOEngine(const YOLOModel::ModelConfig &modelconfig, const DebugConfig &debugconfig) : InferenceEngine(modelconfig, debugconfig)
+OpenVINOEngine::OpenVINOEngine(const YOLOModel::ModelConfig &model_config, const DebugConfig &debug_config) : InferenceEngine(model_config, debug_config)
 {
     // 1. 读取模型
     ov::Core core;                                                                 // OpenVINO核心对象
@@ -77,11 +70,11 @@ OpenVINOEngine::OpenVINOEngine(const YOLOModel::ModelConfig &modelconfig, const 
     }
     m_input_shape = model->inputs()[0].get_shape();
     m_output_shape = model->outputs()[0].get_shape();
-    //NHWC，1是H高度rows，2是W宽度cols
+    //输出张量布局[N, rows, cols]，1是H高度rows，2是W宽度cols
     m_infer_param.out_tensor_rows = model->outputs()[0].get_shape()[1];
     m_infer_param.out_tensor_cols = model->outputs()[0].get_shape()[2];
 
-    // 3. 输出模型信息，检查输入输出张量是否有误（这里的信息不是张量来的，是模型来的，用不了printTensorInfo）
+    // 3. 输出模型端口信息，检查输入输出张量是否有误。
     if (m_debug_config.print_debug_info)
     {
         // 获取模型输入信息
@@ -89,9 +82,9 @@ OpenVINOEngine::OpenVINOEngine(const YOLOModel::ModelConfig &modelconfig, const 
         const std::vector<std::string> available_devices = core.get_available_devices();
 
         ov::element::Type input_type = inputs[0].get_element_type();
-        std::cout << toString(modelconfig.postprocess_mode) << "网络输入张量形状：" << m_input_shape << '\n';
-        std::cout << toString(modelconfig.postprocess_mode) << "网络输入张量类别" << input_type << '\n';
-        std::cout << toString(modelconfig.postprocess_mode) << "网络输出张量形状" << m_output_shape << '\n';
+        std::cout << toString(model_config.postprocess_mode) << "网络输入张量形状：" << m_input_shape << '\n';
+        std::cout << toString(model_config.postprocess_mode) << "网络输入张量类别" << input_type << '\n';
+        std::cout << toString(model_config.postprocess_mode) << "网络输出张量形状" << m_output_shape << '\n';
         std::cout << "OpenVINO可用设备:";
 
         bool has_available_target = false;
@@ -123,6 +116,7 @@ OpenVINOEngine::OpenVINOEngine(const YOLOModel::ModelConfig &modelconfig, const 
         compile_config["GPU_ENABLE_LOOP_UNROLLING"] = "NO"; // GPU优化配置
         compile_config["GPU_HOST_TASK_PRIORITY"] = "HIGH";  // 优先处理gpu相关请求
     }
+    // 注：NPU 专项优化配置需自行补充
 
     // 编译模型
     m_compiled_model = core.compile_model(ppp.build(), m_model_config.device, compile_config);
@@ -172,7 +166,7 @@ void OpenVINOEngine::asyncStartup()
 {
     cv::Mat &startup_img = m_async_preprocess_buffer[m_async_ready_index];
     startup_img.setTo(cv::Scalar(128, 128, 128)); // BGR格式的灰色(128,128,128)
-    ov::Tensor input_tensor = ov::Tensor(ov::element::u8, {1, (size_t)startup_img.rows, (size_t)startup_img.cols, 3}, startup_img.data);
+    ov::Tensor input_tensor = ov::Tensor(ov::element::u8, {1, static_cast<std::size_t>(startup_img.rows), static_cast<std::size_t>(startup_img.cols), 3}, startup_img.data);
     // 设置输入并启动异步推理
     m_async_infer_requests[m_async_ready_index].set_input_tensor(input_tensor);
     m_async_infer_requests[m_async_ready_index].start_async();
@@ -185,7 +179,7 @@ void OpenVINOEngine::async4Startup()
     {
         cv::Mat &startup_img = m_async4_preprocess_buffer[i];
         startup_img.setTo(cv::Scalar(128, 128, 128)); // BGR格式的灰色(128,128,128)
-        ov::Tensor input_tensor = ov::Tensor(ov::element::u8, {1, (size_t)startup_img.rows, (size_t)startup_img.cols, 3}, startup_img.data);
+        ov::Tensor input_tensor = ov::Tensor(ov::element::u8, {1, static_cast<std::size_t>(startup_img.rows), static_cast<std::size_t>(startup_img.cols), 3}, startup_img.data);
         m_async4_infer_requests[i].set_input_tensor(input_tensor);
         m_async4_infer_requests[i].start_async();
     }
@@ -219,7 +213,7 @@ const float* OpenVINOEngine::syncInfer(const cv::Mat &pre_processed_image)
 {
     // Tensor构造方法：先指定类型，再指定形状，形状为NHWC（预处理之前的图像）
     // 由于mat矩阵必然是uchar，所以上面初始化的时候定义了图像预处理为u8，设置tensor的时候ppp会自动把u8改为float32
-    ov::Tensor input_tensor = ov::Tensor(ov::element::u8, {1, (size_t)pre_processed_image.rows, (size_t)pre_processed_image.cols, 3}, pre_processed_image.data);
+    ov::Tensor input_tensor = ov::Tensor(ov::element::u8, {1, static_cast<std::size_t>(pre_processed_image.rows), static_cast<std::size_t>(pre_processed_image.cols), 3}, pre_processed_image.data);
 
     // 设置输入并启动同步推理
     m_sync_infer_request.set_input_tensor(input_tensor);
@@ -237,7 +231,7 @@ const float *OpenVINOEngine::asyncInfer(const cv::Mat &pre_processed_image)
 {
     // Tensor构造方法：先指定类型，再指定形状，形状为NHWC（预处理之前的图像）
     // 由于mat矩阵必然是uchar，所以上面初始化的时候定义了图像预处理为u8，设置tensor的时候ppp会自动把u8改为float32
-    ov::Tensor input_tensor = ov::Tensor(ov::element::u8, {1, (size_t)pre_processed_image.rows, (size_t)pre_processed_image.cols, 3}, pre_processed_image.data);
+    ov::Tensor input_tensor = ov::Tensor(ov::element::u8, {1, static_cast<std::size_t>(pre_processed_image.rows), static_cast<std::size_t>(pre_processed_image.cols), 3}, pre_processed_image.data);
 
     // 正常运行阶段：向当前提交槽位送入新帧，并启动对应异步请求。
     // 预处理结果写入的是成员级缓冲区，即使当前函数结束，request 也不会引用到已经释放的局部 Mat。
@@ -252,6 +246,7 @@ const float *OpenVINOEngine::asyncInfer(const cv::Mat &pre_processed_image)
 
     const float *output_data_ptr = output_tensor.data<const float>();
 
+    // 计算下一个缓冲槽位置
     m_async_submit_index = (m_async_submit_index + 1) % m_async_infer_requests.size();
     m_async_ready_index = (m_async_ready_index + 1) % m_async_infer_requests.size();
 
@@ -262,7 +257,7 @@ const float *OpenVINOEngine::asyncInfer(const cv::Mat &pre_processed_image)
 const float *OpenVINOEngine::asyncInfer4(const cv::Mat &pre_processed_image)
 {
     // Tensor构造方法：先指定类型，再指定形状，形状为NHWC（预处理之前的图像）
-    ov::Tensor input_tensor = ov::Tensor(ov::element::u8, {1, (size_t)pre_processed_image.rows, (size_t)pre_processed_image.cols, 3}, pre_processed_image.data);
+    ov::Tensor input_tensor = ov::Tensor(ov::element::u8, {1, static_cast<std::size_t>(pre_processed_image.rows), static_cast<std::size_t>(pre_processed_image.cols), 3}, pre_processed_image.data);
 
     // 向当前提交槽位送入新帧，并启动对应异步请求。
     // 4 路异步与 2 路异步保持同样的槽位轮询结构，预处理结果同样绑定到成员级缓冲区。

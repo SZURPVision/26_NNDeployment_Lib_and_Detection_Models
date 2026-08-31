@@ -2,19 +2,22 @@
 
 #include <opencv2/videoio.hpp>
 
+#include <cstddef>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 
-#ifndef NETLIB_PROJECT_ROOT
-#define NETLIB_PROJECT_ROOT "."
+#ifndef NNDEPLOYMENT_PROJECT_ROOT
+#define NNDEPLOYMENT_PROJECT_ROOT "."
 #endif
 
 namespace fs = std::filesystem;
 
 namespace
 {
+constexpr std::size_t kSyncPipelineDelay = 0;
+
 void require(bool condition, const std::string &message)
 {
     if (!condition)
@@ -41,7 +44,7 @@ JsonConfig config(const fs::path &root, const std::string &key)
 void testArmor(const fs::path &root, const std::string &key,
                const cv::Mat &frame)
 {
-    ArmorDetector detector(config(root, key));
+    ArmorDetector detector(config(root, key), kSyncPipelineDelay);
     auto detected = detector.process(frame, 2);
     require(detected.has_value() && !detected->image.empty(),
             key + " 首帧推理未返回图像");
@@ -66,7 +69,7 @@ void testArmor(const fs::path &root, const std::string &key,
 
 void testRune(const fs::path &root, const cv::Mat &frame)
 {
-    RuneDetector detector(config(root, "rune_detect"));
+    RuneDetector detector(config(root, "rune_detect"), kSyncPipelineDelay);
     auto detected = detector.process(frame);
     require(detected.has_value() && !detected->image.empty(),
             "rune_detect 首帧推理未返回图像");
@@ -94,7 +97,8 @@ void testInvalidConfig(const fs::path &root)
     bool rejected = false;
     try
     {
-        ArmorDetector detector(config(root, "missing_model"));
+        ArmorDetector detector(config(root, "missing_model"),
+                               kSyncPipelineDelay);
     }
     catch (const std::exception &)
     {
@@ -103,13 +107,41 @@ void testInvalidConfig(const fs::path &root)
     require(rejected, "错误配置未被拒绝");
     std::cout << "invalid-config check passed\n";
 }
+
+void testMismatchedTask(const fs::path &root)
+{
+    bool armor_rejected = false;
+    try
+    {
+        ArmorDetector detector(config(root, "rune_detect"),
+                               kSyncPipelineDelay);
+    }
+    catch (const std::invalid_argument &)
+    {
+        armor_rejected = true;
+    }
+    require(armor_rejected, "ArmorDetector 未拒绝神符模型");
+
+    bool rune_rejected = false;
+    try
+    {
+        RuneDetector detector(config(root, "armor_v5"),
+                              kSyncPipelineDelay);
+    }
+    catch (const std::invalid_argument &)
+    {
+        rune_rejected = true;
+    }
+    require(rune_rejected, "RuneDetector 未拒绝装甲板模型");
+    std::cout << "mismatched-task checks passed\n";
+}
 } // namespace
 
 int main()
 {
     try
     {
-        const fs::path root = fs::path(NETLIB_PROJECT_ROOT);
+        const fs::path root = fs::path(NNDEPLOYMENT_PROJECT_ROOT);
         const cv::Mat armor_frame = readFrame(root / "测试视频/装甲板.mp4");
         const cv::Mat rune_frame = readFrame(root / "测试视频/符.avi");
 
@@ -117,6 +149,7 @@ int main()
         testArmor(root, "armor_v8", armor_frame);
         testRune(root, rune_frame);
         testInvalidConfig(root);
+        testMismatchedTask(root);
         std::cout << "detector smoke test passed" << std::endl;
         return 0;
     }

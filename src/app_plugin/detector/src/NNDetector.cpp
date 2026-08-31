@@ -1,33 +1,10 @@
 #include "NNDetector.hpp"
 
-#include <opencv2/core/persistence.hpp>
-
 #include <stdexcept>
-#include <string>
 #include <utility>
 
 namespace
 {
-std::size_t pipelineDelay(const JsonConfig &config)
-{
-    cv::FileStorage file(config.json_path, cv::FileStorage::READ);
-    if (!file.isOpened())
-        throw std::runtime_error("无法打开检测配置: " + config.json_path);
-
-    const cv::FileNode node = file[config.model_key];
-    if (node.empty())
-        throw std::runtime_error("检测配置中不存在节点: " + config.model_key);
-
-    const std::string mode = static_cast<std::string>(node["infer_mode"]);
-    if (mode == "sync")
-        return 0;
-    if (mode == "async")
-        return 1;
-    if (mode == "async4")
-        return 3;
-    throw std::runtime_error("不支持的推理模式: " + mode);
-}
-
 cv::Mat takeMatchedFrame(std::deque<cv::Mat> &frames, std::size_t delay)
 {
     if (frames.size() <= delay)
@@ -38,8 +15,10 @@ cv::Mat takeMatchedFrame(std::deque<cv::Mat> &frames, std::size_t delay)
 }
 } // namespace
 
-ArmorDetector::ArmorDetector(const JsonConfig &config, const DebugConfig &debug)
-    : m_pipeline_delay(pipelineDelay(config)), m_model(config, debug)
+ArmorDetector::ArmorDetector(const JsonConfig &config,
+                             std::size_t pipeline_delay,
+                             const DebugConfig &debug)
+    : m_model(config, debug), m_pipeline_delay(pipeline_delay)
 {}
 
 std::optional<ArmorDetectionFrame> ArmorDetector::process(const cv::Mat &image,
@@ -56,8 +35,10 @@ std::optional<ArmorDetectionFrame> ArmorDetector::process(const cv::Mat &image,
     return ArmorDetectionFrame{std::move(matched), std::move(results)};
 }
 
-RuneDetector::RuneDetector(const JsonConfig &config, const DebugConfig &debug)
-    : m_pipeline_delay(pipelineDelay(config)), m_model(config, debug)
+RuneDetector::RuneDetector(const JsonConfig &config,
+                           std::size_t pipeline_delay,
+                           const DebugConfig &debug)
+    : m_model(config, debug), m_pipeline_delay(pipeline_delay)
 {}
 
 std::optional<RuneDetectionFrame> RuneDetector::process(const cv::Mat &image)

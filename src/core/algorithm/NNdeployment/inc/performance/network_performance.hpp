@@ -19,7 +19,9 @@ struct OfficialBenchmarkConfig
 // 累积部署库各阶段耗时，所有输入与内部统计单位均为微秒。
 struct SpeedStats
 {
+    // 累加一次各阶段耗时。
     void update(double preprocess_us, double inference_us, double postprocess_us);
+    // 输出当前累计耗时统计。
     void printCurrentStats() const;
 
 private:
@@ -31,6 +33,7 @@ private:
     std::uint64_t m_call_count = 0;
 };
 
+// 运行 OpenVINO benchmark_app 并记录统一格式的性能报告。
 void runOfficialBenchmark(const std::string &model_path,
                           const std::string &device,
                           const std::string &infer_mode,

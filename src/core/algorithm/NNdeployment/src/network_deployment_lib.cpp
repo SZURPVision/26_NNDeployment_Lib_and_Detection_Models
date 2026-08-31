@@ -3,19 +3,19 @@
 #include "network_performance.hpp"
 #include "network_postprocess.hpp"
 
-#ifndef NETLIB_WITH_TENSORRT
-#define NETLIB_WITH_TENSORRT 0
+#ifndef NNDEPLOYMENT_WITH_TENSORRT
+#define NNDEPLOYMENT_WITH_TENSORRT 0
 #endif
 
-#ifndef NETLIB_WITH_OPENVINO
-#define NETLIB_WITH_OPENVINO 1
+#ifndef NNDEPLOYMENT_WITH_OPENVINO
+#define NNDEPLOYMENT_WITH_OPENVINO 1
 #endif
 
-#if NETLIB_WITH_OPENVINO
+#if NNDEPLOYMENT_WITH_OPENVINO
 #include "network_deployment_openvino.hpp"
 #endif
 
-#if NETLIB_WITH_TENSORRT
+#if NNDEPLOYMENT_WITH_TENSORRT
 #include "network_deployment_tensorrt.hpp"
 #endif
 
@@ -35,7 +35,7 @@
 
 // ==================== YOLOModel 实现 ====================
 
-// namespace 中只包含字符串解析、枚举转换、配置读取和提示输出等局部工具，不用细看，跳过即可。
+// namespace 中只包含字符串解析、枚举转换、配置读取和提示输出等局部工具，如需研究原理代码，无需着重研究此部分内容。
 namespace
 {
 using NetDeployWay = YOLOModel::NetDeployWay;
@@ -77,9 +77,9 @@ NetDeployWay parseDeployWay(const std::string &value)
 {
     const std::string way = lowerString(value);
     if (way.empty() || way == "openvino")
-        return NetDeployWay::OpenVINO;
+        return NetDeployWay::openvino;
     if (way == "tensorrt")
-        return NetDeployWay::TensorRT;
+        return NetDeployWay::tensorrt;
     throw std::runtime_error("不支持的deploy_way: " + value);
 }
 
@@ -107,9 +107,9 @@ std::string toString(NetDeployWay way)
 {
     switch (way)
     {
-    case NetDeployWay::OpenVINO:
+    case NetDeployWay::openvino:
         return "openvino";
-    case NetDeployWay::TensorRT:
+    case NetDeployWay::tensorrt:
         return "tensorrt";
     default:
         return "error type";
@@ -159,7 +159,7 @@ void printCurrentModelInfo(const ModelConfig &model_config)
 {
     std::cout << "兵种：" << toString(model_config.postprocess_mode) << " "
               << "推理模式：" << toString(model_config.infer_mode) << " "
-              << "部署方式：" << toString(model_config.deployment_way) << std::endl;
+              << "部署方式：" << toString(model_config.deploy_way) << std::endl;
 
     switch (model_config.postprocess_mode)
     {
@@ -167,22 +167,22 @@ void printCurrentModelInfo(const ModelConfig &model_config)
         break;
     case NetPostProcessMode::v5infantry_fourpoints:
         if ((model_config.infer_mode != NetInferMode::async && model_config.infer_mode != NetInferMode::async4) ||
-            model_config.deployment_way != NetDeployWay::OpenVINO)
-            std::cout << "注：标准情况下v5步兵应该使用" << toString(NetDeployWay::OpenVINO) << "部署，" << toString(NetInferMode::async) << "推理" << std::endl;
+            model_config.deploy_way != NetDeployWay::openvino)
+            std::cout << "注：标准情况下v5步兵应该使用" << toString(NetDeployWay::openvino) << "部署，" << toString(NetInferMode::async) << "推理" << std::endl;
         break;
     case NetPostProcessMode::v8infantry_fourpoints:
     case NetPostProcessMode::v8infantry_fourpoints_21:
         if ((model_config.infer_mode != NetInferMode::async && model_config.infer_mode != NetInferMode::async4) ||
-            model_config.deployment_way != NetDeployWay::OpenVINO)
-            std::cout << "注：标准情况下v8步兵应该使用" << toString(NetDeployWay::OpenVINO) << "部署，" << toString(NetInferMode::async) << "推理" << std::endl;
+            model_config.deploy_way != NetDeployWay::openvino)
+            std::cout << "注：标准情况下v8步兵应该使用" << toString(NetDeployWay::openvino) << "部署，" << toString(NetInferMode::async) << "推理" << std::endl;
         break;
     case NetPostProcessMode::lidar_fourpoints:
-        if (model_config.infer_mode != NetInferMode::sync || model_config.deployment_way != NetDeployWay::TensorRT)
-            std::cout << "注：标准情况下雷达应该使用" << toString(NetDeployWay::TensorRT) << "部署，" << toString(NetInferMode::sync) << "推理" << std::endl;
+        if (model_config.infer_mode != NetInferMode::sync || model_config.deploy_way != NetDeployWay::tensorrt)
+            std::cout << "注：标准情况下雷达应该使用" << toString(NetDeployWay::tensorrt) << "部署，" << toString(NetInferMode::sync) << "推理" << std::endl;
         break;
     case NetPostProcessMode::rune_fivepoints:
-        if (model_config.infer_mode != NetInferMode::sync || model_config.deployment_way != NetDeployWay::OpenVINO)
-            std::cout << "注：标准情况下打符应该使用" << toString(NetDeployWay::OpenVINO) << "部署，" << toString(NetInferMode::sync) << "推理" << std::endl;
+        if (model_config.infer_mode != NetInferMode::sync || model_config.deploy_way != NetDeployWay::openvino)
+            std::cout << "注：标准情况下打符应该使用" << toString(NetDeployWay::openvino) << "部署，" << toString(NetInferMode::sync) << "推理" << std::endl;
         break;
     }
     std::cout << std::endl;
@@ -202,32 +202,32 @@ ModelConfig loadModelConfigFromJson(const JsonConfig &json_config)
     if (json_config.model_folder.empty())
         throw std::runtime_error("传入的模型文件夹路径为空: " + json_config.model_key);
 
-    const std::string xml_name = (std::string)node["xml"];
+    const std::string xml_name = static_cast<std::string>(node["xml"]);
     if (xml_name.empty())
         throw std::runtime_error("模型配置缺少xml文件名: " + json_config.model_key);
 
     const std::string model_path =
         (std::filesystem::path(json_config.model_folder) / xml_name).lexically_normal().string();
 
-    const NetInferMode infermode = parseInferMode((std::string)node["infer_mode"]);
-    const NetDeployWay deployway = parseDeployWay((std::string)node["deploy_way"]);
-    const NetPostProcessMode postprocessmode = parsePostProcessMode((std::string)node["postprocess_mode"]);
+    const NetInferMode infer_mode = parseInferMode(static_cast<std::string>(node["infer_mode"]));
+    const NetDeployWay deploy_way = parseDeployWay(static_cast<std::string>(node["deploy_way"]));
+    const NetPostProcessMode postprocess_mode = parsePostProcessMode(static_cast<std::string>(node["postprocess_mode"]));
 
-    std::string device = (std::string)node["device"];
+    std::string device = static_cast<std::string>(node["device"]);
     if (device.empty())
         device = "GPU";
 
     float confidence_threshold = 0.5f;
     if (!node["score_threshold"].empty())
-        confidence_threshold = (float)node["score_threshold"];
+        confidence_threshold = static_cast<float>(node["score_threshold"]);
     else if (!node["config_thresh"].empty())                // 兼容旧版本json配置文件
-        confidence_threshold = (float)node["config_thresh"];
+        confidence_threshold = static_cast<float>(node["config_thresh"]);
 
-    return ModelConfig(model_path, infermode, deployway, device, confidence_threshold, postprocessmode);
+    return ModelConfig(model_path, infer_mode, deploy_way, device, confidence_threshold, postprocess_mode);
 }
 } // namespace
 
-YOLOModel::InferenceEngine::InferenceEngine(const ModelConfig &modelconfig, const DebugConfig &debugconfig) : m_model_config(modelconfig), m_debug_config(debugconfig) {}
+YOLOModel::InferenceEngine::InferenceEngine(const ModelConfig &model_config, const DebugConfig &debug_config) : m_model_config(model_config), m_debug_config(debug_config) {}
 
 const float *YOLOModel::InferenceEngine::infer(const cv::Mat &pre_processed_image)
 {
@@ -248,14 +248,14 @@ float YOLOModel::defaultNmsThreshold(NetPostProcessMode mode)
     switch (mode)
     {
     case NetPostProcessMode::rune_fivepoints:
-        return 100.f;
+        return 100.f;   // 符模型 NMS 阈值为像素距离
     case NetPostProcessMode::v5infantry_fourpoints:
     case NetPostProcessMode::v8infantry_fourpoints:
     case NetPostProcessMode::v8infantry_fourpoints_21:
     case NetPostProcessMode::lidar_fourpoints:
     case NetPostProcessMode::auto_detect:
     default:
-        return 0.2f;
+        return 0.2f;    // armor模型 NMS 阈值为 IOU 比例
     }
 }
 
@@ -271,44 +271,44 @@ YOLOModel::YOLOModel(const std::string &model_path)
 
 YOLOModel::YOLOModel(const std::string &model_path,
                      const std::string &infer_mode,
-                     const std::string &deployment_way,
+                     const std::string &deploy_way,
                      const std::string &device,
                      float confidence_threshold,
-                     const std::string &postprocessmode,
-                     const DebugConfig &debugconfig)
+                     const std::string &postprocess_mode,
+                     const DebugConfig &debug_config)
     : YOLOModel(ModelConfig(model_path,
                             parseInferMode(infer_mode),
-                            parseDeployWay(deployment_way),
+                            parseDeployWay(deploy_way),
                             device,
                             confidence_threshold,
-                            parsePostProcessMode(postprocessmode)),
-                debugconfig)
+                            parsePostProcessMode(postprocess_mode)),
+                debug_config)
 {}
 
 YOLOModel::YOLOModel(const JsonConfig &json_config,
-                     const DebugConfig &debugconfig)
-    : YOLOModel(loadModelConfigFromJson(json_config), debugconfig)
+                     const DebugConfig &debug_config)
+    : YOLOModel(loadModelConfigFromJson(json_config), debug_config)
 {}
 
 YOLOModel::~YOLOModel() noexcept = default;
 
-YOLOModel::YOLOModel(const ModelConfig &modelconfig, const DebugConfig &debugconfig) : m_model_config(modelconfig), m_debug_config(debugconfig)
+YOLOModel::YOLOModel(const ModelConfig &model_config, const DebugConfig &debug_config) : m_model_config(model_config), m_debug_config(debug_config)
 {
     if (m_debug_config.calculate_speed_info)
         m_speed_stats = std::make_unique<MPT::SpeedStats>();
 
     // 根据部署方式选择openvino/tensorrt，目前仅雷达会使用tensorrt
-    switch (m_model_config.deployment_way)
+    switch (m_model_config.deploy_way)
     {
-    case NetDeployWay::OpenVINO:
-#if NETLIB_WITH_OPENVINO
+    case NetDeployWay::openvino:
+#if NNDEPLOYMENT_WITH_OPENVINO
         m_inference_engine = std::make_unique<OpenVINOEngine>(m_model_config, m_debug_config);
 #else
         throw std::runtime_error("OpenVINO support is disabled at build time");
 #endif
         break;
-    case NetDeployWay::TensorRT:
-#if NETLIB_WITH_TENSORRT
+    case NetDeployWay::tensorrt:
+#if NNDEPLOYMENT_WITH_TENSORRT
         m_inference_engine = std::make_unique<TensorRTEngine>(m_model_config, m_debug_config);
 #else
         throw std::runtime_error("TensorRT support is disabled at build time");
@@ -391,16 +391,6 @@ YOLOModel::YOLOModel(const ModelConfig &modelconfig, const DebugConfig &debugcon
 //  完整的网络识别框架——主要流程：传入图片->预处理->推理->后处理->输出结果
 std::vector<NetArmorResult> YOLOModel::netProcess(const cv::Mat &input_image, const int &my_color)
 {
-    if (!(m_model_config.postprocess_mode == NetPostProcessMode::auto_detect ||
-          m_model_config.postprocess_mode == NetPostProcessMode::v5infantry_fourpoints ||
-          m_model_config.postprocess_mode == NetPostProcessMode::v8infantry_fourpoints ||
-          m_model_config.postprocess_mode == NetPostProcessMode::v8infantry_fourpoints_21 ||
-          m_model_config.postprocess_mode == NetPostProcessMode::lidar_fourpoints))
-    {
-        std::cerr << "该模型不支持四点装甲板推理" << std::endl;
-        return {};
-    }
-
     // debug 的测速选项开启时进行各部分的测速。
     const bool measure = m_speed_stats != nullptr;
     PerformanceClock::time_point phase_start{};
@@ -443,12 +433,6 @@ std::vector<NetArmorResult> YOLOModel::netProcess(const cv::Mat &input_image, co
 
 std::vector<NetRuneResult> YOLOModel::netProcess(const cv::Mat &input_image)
 {
-    if (m_model_config.postprocess_mode != NetPostProcessMode::rune_fivepoints)
-    {
-        std::cerr << "该模型不支持五点符叶推理" << std::endl;
-        return {};
-    }
-
     const bool measure = m_speed_stats != nullptr;
     PerformanceClock::time_point phase_start{};
     double preprocess_us = 0.0;

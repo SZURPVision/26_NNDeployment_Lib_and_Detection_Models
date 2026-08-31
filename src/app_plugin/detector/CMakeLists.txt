@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-set(lib_name NNdetect)
+set(lib_name NNDetector)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio)
 
@@ -20,7 +20,7 @@ target_link_libraries(${lib_name}_lib
 
 add_executable(main examples/main.cpp)
 target_compile_definitions(main PRIVATE
-    NETLIB_PROJECT_ROOT="${PROJECT_SOURCE_DIR}"
+    NNDEPLOYMENT_PROJECT_ROOT="${PROJECT_SOURCE_DIR}"
 )
 target_link_libraries(main PRIVATE
     ${lib_name}_lib
@@ -31,7 +31,7 @@ target_link_libraries(main PRIVATE
 
 add_executable(main_test_speed tests/main_test_speed.cpp)
 target_compile_definitions(main_test_speed PRIVATE
-    NETLIB_PROJECT_ROOT="${PROJECT_SOURCE_DIR}"
+    NNDEPLOYMENT_PROJECT_ROOT="${PROJECT_SOURCE_DIR}"
 )
 target_link_libraries(main_test_speed PRIVATE
     ${lib_name}_lib
@@ -43,7 +43,7 @@ target_link_libraries(main_test_speed PRIVATE
 if(BUILD_TESTING)
     add_executable(detector_smoke_test tests/detector_smoke_test.cpp)
     target_compile_definitions(detector_smoke_test PRIVATE
-        NETLIB_PROJECT_ROOT="${PROJECT_SOURCE_DIR}"
+        NNDEPLOYMENT_PROJECT_ROOT="${PROJECT_SOURCE_DIR}"
     )
     target_link_libraries(detector_smoke_test PRIVATE
         ${lib_name}_lib

@@ -39,14 +39,14 @@ public:
     // 直接指定模型路径、推理模式和部署后端。
     YOLOModel(const std::string &model_path,
               const std::string &infer_mode,
-              const std::string &deployment_way,
+              const std::string &deploy_way,
               const std::string &device = "GPU",
               float confidence_threshold = 0.5f,
-              const std::string &postprocessmode = "auto_detect",
-              const DebugConfig &debugconfig = DebugConfig());
+              const std::string &postprocess_mode = "auto_detect",
+              const DebugConfig &debug_config = DebugConfig());
     // 从 JSON 的指定节点读取模型配置。
     YOLOModel(const JsonConfig &json_config,
-              const DebugConfig &debugconfig = DebugConfig());
+              const DebugConfig &debug_config = DebugConfig());
     YOLOModel() = delete;
     ~YOLOModel() noexcept;
 
@@ -62,14 +62,13 @@ public:
     bool supportsArmor() const;
     // 判断当前模型是否使用神符后处理。
     bool supportsRune() const;
-
     class InferenceEngine;
-    class Postprocessor;
+    class PostProcessor;
 
     enum class NetDeployWay
     {
-        OpenVINO = 0,
-        TensorRT = 1
+        openvino = 0,
+        tensorrt = 1
     };
     enum class NetInferMode
     {
@@ -92,28 +91,28 @@ public:
         std::string model_path;
         NetPostProcessMode postprocess_mode;
         NetInferMode infer_mode;
-        NetDeployWay deployment_way;
+        NetDeployWay deploy_way;
         std::string device;
         float confidence_threshold = 0.5f;
 
         ModelConfig() = delete;
         ModelConfig(const std::string &path,
-                    const NetInferMode &infermode = NetInferMode::async,
-                    const NetDeployWay &deployway = NetDeployWay::OpenVINO,
+                    const NetInferMode &infer_mode = NetInferMode::async,
+                    const NetDeployWay &deploy_way = NetDeployWay::openvino,
                     const std::string &device = "GPU",
                     float confidence = 0.5f,
-                    const NetPostProcessMode &postprocessmode = NetPostProcessMode::auto_detect)
+                    const NetPostProcessMode &postprocess_mode = NetPostProcessMode::auto_detect)
             : model_path(path),
-              postprocess_mode(postprocessmode),
-              infer_mode(infermode),
-              deployment_way(deployway),
+              postprocess_mode(postprocess_mode),
+              infer_mode(infer_mode),
+              deploy_way(deploy_way),
               device(device),
               confidence_threshold(confidence)
         {}
     };
 
 private:
-    YOLOModel(const ModelConfig &modelconfig, const DebugConfig &debugconfig = DebugConfig());
+    YOLOModel(const ModelConfig &model_config, const DebugConfig &debug_config = DebugConfig());
 
     static float defaultNmsThreshold(NetPostProcessMode mode);
 
@@ -122,5 +121,5 @@ private:
     std::unique_ptr<MPT::SpeedStats> m_speed_stats;
 
     std::unique_ptr<InferenceEngine> m_inference_engine;
-    std::unique_ptr<Postprocessor> m_postprocessor;
+    std::unique_ptr<PostProcessor> m_postprocessor;
 };

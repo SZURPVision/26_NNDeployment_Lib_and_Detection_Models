@@ -8,11 +8,11 @@
 #include <string>
 #include <vector>
 
-class YOLOModel::Postprocessor
+class YOLOModel::PostProcessor
 {
 public:
-    Postprocessor(const ModelConfig &modelconfig, float nms_threshold);
-    virtual ~Postprocessor() = default;
+    PostProcessor(const ModelConfig &model_config, float nms_threshold);
+    virtual ~PostProcessor() = default;
 
     virtual std::vector<NetArmorResult> postProcessArmorMat(const float *input_ptr, const InferParam &infer_param, const int &my_color) { throw std::logic_error("detect postprocess not supported"); };
 
@@ -23,10 +23,10 @@ protected:
     float m_nms_threshold = 0.f;
 };
 
-class V5InfantryPostProcessor : public YOLOModel::Postprocessor
+class V5InfantryPostProcessor : public YOLOModel::PostProcessor
 {
 public:
-    V5InfantryPostProcessor(const YOLOModel::ModelConfig &modelconfig, float nms_threshold);
+    V5InfantryPostProcessor(const YOLOModel::ModelConfig &model_config, float nms_threshold);
     ~V5InfantryPostProcessor() = default;
 
     std::vector<NetArmorResult> postProcessArmorMat(const float *input_ptr, const InferParam &infer_param, const int &my_color) override;
@@ -37,10 +37,10 @@ private:
     std::queue<std::vector<NetArmorResult>> m_last_results;
 };
 
-class V8InfantryPostProcessor : public YOLOModel::Postprocessor
+class V8InfantryPostProcessor : public YOLOModel::PostProcessor
 {
 public:
-    V8InfantryPostProcessor(const YOLOModel::ModelConfig &modelconfig, float nms_threshold);
+    V8InfantryPostProcessor(const YOLOModel::ModelConfig &model_config, float nms_threshold);
     ~V8InfantryPostProcessor() = default;
 
     std::vector<NetArmorResult> postProcessArmorMat(const float *input_ptr, const InferParam &infer_param, const int &my_color) override;
@@ -51,10 +51,10 @@ private:
     std::queue<std::vector<NetArmorResult>> m_last_results;
 };
 
-class V8_21InfantryPostProcessor : public YOLOModel::Postprocessor
+class V8_21InfantryPostProcessor : public YOLOModel::PostProcessor
 {
 public:
-    V8_21InfantryPostProcessor(const YOLOModel::ModelConfig &modelconfig, float nms_threshold);
+    V8_21InfantryPostProcessor(const YOLOModel::ModelConfig &model_config, float nms_threshold);
     ~V8_21InfantryPostProcessor() = default;
 
     std::vector<NetArmorResult> postProcessArmorMat(const float *input_ptr, const InferParam &infer_param, const int &my_color) override;
@@ -65,10 +65,10 @@ private:
     std::queue<std::vector<NetArmorResult>> m_last_results;
 };
 
-class LidarPostProcessor : public YOLOModel::Postprocessor
+class LidarPostProcessor : public YOLOModel::PostProcessor
 {
 public:
-    LidarPostProcessor(const YOLOModel::ModelConfig &modelconfig, float nms_threshold);
+    LidarPostProcessor(const YOLOModel::ModelConfig &model_config, float nms_threshold);
     ~LidarPostProcessor() = default;
 
     std::vector<NetArmorResult> postProcessArmorMat(const float *input_ptr, const InferParam &infer_param, const int &my_color) override;
@@ -79,10 +79,10 @@ private:
     std::vector<std::string> m_color_names = {"蓝色", "红色"};
 };
 
-class RunePostProcessor : public YOLOModel::Postprocessor
+class RunePostProcessor : public YOLOModel::PostProcessor
 {
 public:
-    RunePostProcessor(const YOLOModel::ModelConfig &modelconfig, float nms_threshold);
+    RunePostProcessor(const YOLOModel::ModelConfig &model_config, float nms_threshold);
     ~RunePostProcessor() = default;
 
     std::vector<NetRuneResult> postProcessRuneMat(const float *input_ptr, const InferParam &infer_param) override;

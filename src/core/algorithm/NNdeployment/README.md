@@ -6,10 +6,10 @@
 
 - `model_path`：OpenVINO 使用 `.xml`，TensorRT 使用 `.trt`/`.engine`。
 - `infer_mode`：`"sync"` / `"async"` / `"async4"`。
-- `deployment_way`：`"openvino"` / `"tensorrt"`。
+- `deploy_way`：`"openvino"` / `"tensorrt"`。
 - `device`：OpenVINO 设备，如 `"GPU"` / `"CPU"` / `"NPU"`。
 - `confidence_threshold`：置信度阈值。
-- `postprocessmode`：通常传 `"auto_detect"`。
+- `postprocess_mode`：通常传 `"auto_detect"`。
 
 ## 直接传参构造
 

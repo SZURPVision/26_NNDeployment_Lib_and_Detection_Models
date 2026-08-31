@@ -10,7 +10,7 @@
 class OpenVINOEngine : public YOLOModel::InferenceEngine
 {
 public:
-    OpenVINOEngine(const YOLOModel::ModelConfig &modelconfig, const DebugConfig &debugconfig);
+    OpenVINOEngine(const YOLOModel::ModelConfig &model_config, const DebugConfig &debug_config);
     ~OpenVINOEngine() = default;
 
     int inputWidth() const override;

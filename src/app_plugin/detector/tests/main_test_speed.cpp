@@ -4,14 +4,15 @@
 #include <opencv2/videoio.hpp>
 
 #include <array>
+#include <cstddef>
 #include <filesystem>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <string>
 
-#ifndef NETLIB_PROJECT_ROOT
-#define NETLIB_PROJECT_ROOT "."
+#ifndef NNDEPLOYMENT_PROJECT_ROOT
+#define NNDEPLOYMENT_PROJECT_ROOT "."
 #endif
 
 namespace fs = std::filesystem;
@@ -34,6 +35,7 @@ struct TestCase
     fs::path model_path;
     fs::path video_path;
     std::string infer_mode;
+    std::size_t pipeline_delay;
 };
 
 void runTest(const fs::path &root, const TestCase &test)
@@ -49,13 +51,15 @@ void runTest(const fs::path &root, const TestCase &test)
                             model_folder.string());
     if (test.task == Task::Armor)
     {
-        ArmorDetector detector(config, DebugConfig(false, true));
+        ArmorDetector detector(config, test.pipeline_delay,
+                               DebugConfig(false, true));
         for (int index = 0; index < kIterations; ++index)
             detector.process(frame, 2);
     }
     else
     {
-        RuneDetector detector(config, DebugConfig(false, true));
+        RuneDetector detector(config, test.pipeline_delay,
+                              DebugConfig(false, true));
         for (int index = 0; index < kIterations; ++index)
             detector.process(frame);
     }
@@ -74,17 +78,17 @@ int main(int argc, char **argv)
     try
     {
         const fs::path root = fs::absolute(
-            argc > 1 ? fs::path(argv[1]) : fs::path(NETLIB_PROJECT_ROOT));
+            argc > 1 ? fs::path(argv[1]) : fs::path(NNDEPLOYMENT_PROJECT_ROOT));
         const std::array<TestCase, 3> tests = {{
             {"Armor V8", "armor_v8", Task::Armor,
              "所有模型/openvino/Infantry-v8n-fp16-20260726-D1.8w-B16/Infantry-v8n-fp16-20260726-D1.8w-B16.xml",
-             "测试视频/中距离陀螺.avi", "async"},
+             "测试视频/中距离陀螺.avi", "async", 1},
             {"Armor V5", "armor_v5", Task::Armor,
              "所有模型/openvino/Infantry-v5n-fp16-20250725/Infantry-v5n-Release-20260725.xml",
-             "测试视频/中距离陀螺.avi", "async"},
+             "测试视频/中距离陀螺.avi", "async", 1},
             {"Rune V8", "rune_detect", Task::Rune,
              "所有模型/openvino/Rune-v8n-fp16-20260624-D14367-B16/Rune-v8n-fp16-20260624-D14367-B16.xml",
-             "测试视频/符.avi", "sync"},
+             "测试视频/符.avi", "sync", 0},
         }};
 
         int failures = 0;

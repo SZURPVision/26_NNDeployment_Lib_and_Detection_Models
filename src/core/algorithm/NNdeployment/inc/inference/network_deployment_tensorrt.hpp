@@ -1,10 +1,10 @@
 #pragma once
 
-#ifndef NETLIB_WITH_TENSORRT
-#define NETLIB_WITH_TENSORRT 0
+#ifndef NNDEPLOYMENT_WITH_TENSORRT
+#define NNDEPLOYMENT_WITH_TENSORRT 0
 #endif
 
-#if NETLIB_WITH_TENSORRT
+#if NNDEPLOYMENT_WITH_TENSORRT
 
 #include "network_inference.hpp"
 
@@ -32,7 +32,7 @@ public:
 class TensorRTEngine : public YOLOModel::InferenceEngine
 {
 public:
-    TensorRTEngine(const YOLOModel::ModelConfig &modelconfig, const DebugConfig &debugconfig);
+    TensorRTEngine(const YOLOModel::ModelConfig &model_config, const DebugConfig &debug_config);
     ~TensorRTEngine();
     int inputWidth() const override;
     int inputHeight() const override;

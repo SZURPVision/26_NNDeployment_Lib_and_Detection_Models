@@ -133,7 +133,7 @@ Benchmark Tool 的参数说明见 [OpenVINO Benchmark Tool 文档](https://docs.
 
 ```bash
 cmake -S . -B build \
-  -DNETLIB_ENABLE_TENSORRT=OFF \
+  -DNNDEPLOYMENT_ENABLE_TENSORRT=OFF \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
@@ -144,7 +144,7 @@ cmake --build build -j
 
 ```bash
 cmake -S . -B build-trt \
-  -DNETLIB_ENABLE_TENSORRT=ON \
+  -DNNDEPLOYMENT_ENABLE_TENSORRT=ON \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build-trt -j
 ```
@@ -498,7 +498,7 @@ $$
 
 `sync` 模式完成当前帧推理后立即返回当前帧结果，适合关注单帧延迟的任务。`async` 使用两个请求槽位，一边提交新帧，一边等待并读取上一槽位结果；`async4` 以相同方式轮转四个请求。异步模式通过并行重叠提高连续输入吞吐，但返回结果相对输入存在流水线延迟。
 
-`ArmorDetector` 与 `RuneDetector` 根据 JSON 中的推理模式缓存输入帧：`sync` 不延迟，`async` 延迟 1 帧，`async4` 延迟 3 帧。`process` 在预热期间返回 `std::nullopt`，之后把检测结果和对应的原始画面一并返回，调用方无需自行维护帧序。视频结束时仍在流水线中的最后 1 或 3 帧不会被重复送入模型，因此综合演示的异步输出会比输入少相应帧数。
+`ArmorDetector` 与 `RuneDetector` 按构造时传入的延迟量缓存输入帧：当前 `sync` 传 `0`，`async` 传 `1`，`async4` 传 `3`。该数值由调用方根据推理流水线决定，detector 不解析部署配置。`process` 在预热期间返回 `std::nullopt`，之后把检测结果和对应的原始画面一并返回。视频结束时仍在流水线中的最后 1 或 3 帧不会被重复送入模型，因此综合演示的异步输出会比输入少相应帧数。
 
 ### 7.4 后处理解码与非极大值抑制
 
@@ -535,7 +535,7 @@ JsonConfig armor_config{
     "src/app_plugin/detector/config/detect.json",
     "armor_v8",
     "所有模型/openvino"};
-ArmorDetector armor_detector(armor_config);
+ArmorDetector armor_detector(armor_config, 1); // 当前配置使用 async
 if (auto output = armor_detector.process(frame, 1)) {
     // output->image 与 output->results 属于同一输入帧；异步预热期间没有 output。
     consume(output->image, output->results);
@@ -545,7 +545,7 @@ JsonConfig rune_config{
     "src/app_plugin/detector/config/detect.json",
     "rune_detect",
     "所有模型/openvino"};
-RuneDetector rune_detector(rune_config);
+RuneDetector rune_detector(rune_config, 0); // 当前配置使用 sync
 if (auto output = rune_detector.process(frame)) {
     consume(output->image, output->results);
 }
